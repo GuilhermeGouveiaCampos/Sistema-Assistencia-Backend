@@ -125,6 +125,14 @@ app.use('/api/status', statusRoutes);
 const ordensConsultaRoutes = require('./routes/ordensConsulta');
 app.use('/api/ordens-consulta', ordensConsultaRoutes);
 
+
+process.on('unhandledRejection', (reason) => {
+  console.error('🛑 UnhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('🛑 UncaughtException:', err);
+});
+
 /* ===========================
    Sobe servidor
    =========================== */
