@@ -25,20 +25,22 @@ app.use(morgan(':method :url :status :res[content-length] - :response-time ms'))
 
 // CORS: libere seu domínio da Vercel e localhost do Vite
 const allowedOrigins = [
-  process.env.FRONTEND_URL,   // ex.: https://seu-frontend.vercel.app
-  'http://localhost:5173'     // dev local
-].filter(Boolean);
+  "http://localhost:5173", // dev
+  "https://sistema-assistencia-frontend.vercel.app" // produção
+];
 
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // permite curl/server-to-server
-    const ok =
-      allowedOrigins.some(o => origin === o) ||
-      (origin && origin.endsWith('.vercel.app')); // aceita previews da Vercel
-    return ok ? cb(null, true) : cb(new Error('CORS bloqueado: ' + origin));
-  },
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // permite requisições server-to-server
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error("CORS bloqueado para origem: " + origin));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // <- garante preflight
+    allowedHeaders: ["Content-Type", "Authorization", "x-user-id"] // <- libera headers extras
+  })
+);
 
 // Necessário atrás de proxy (Railway/Render/Heroku)
 app.set('trust proxy', 1);
@@ -125,7 +127,7 @@ app.use('/api/status', statusRoutes);
 const ordensConsultaRoutes = require('./routes/ordensConsulta');
 app.use('/api/ordens-consulta', ordensConsultaRoutes);
 
-
+                                                                        
 process.on('unhandledRejection', (reason) => {
   console.error('🛑 UnhandledRejection:', reason);
 });
