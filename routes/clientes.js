@@ -2,6 +2,10 @@
 const express = require('express');
 const router = express.Router();
 
+/** Util: normaliza string e pega só dígitos */
+function norm(s) { return String(s || '').trim(); }
+function onlyDigits(s) { return String(s || '').replace(/\D/g, ''); }
+
 /** Descobre se certas colunas existem na tabela `cliente` */
 function getClienteColumns(db, cols, cb) {
   if (!Array.isArray(cols) || cols.length === 0) return cb(new Set());
@@ -16,14 +20,6 @@ function getClienteColumns(db, cols, cb) {
   });
 }
 
-/** Normaliza filtros */
-function norm(str) {
-  return String(str || '').trim();
-}
-function onlyDigits(str) {
-  return String(str || '').replace(/\D/g, '');
-}
-
 /**
  * GET /api/clientes?nome=&cpf=
  */
@@ -33,20 +29,15 @@ router.get('/', (req, res) => {
   const cpfDigits = onlyDigits(req.query.cpf);
 
   getClienteColumns(db, ['telefone', 'celular', 'status'], (cols) => {
-    // qual coluna usar como "telefone" na seleção
-    const telSel = cols.has('telefone')
-      ? 'telefone'
-      : (cols.has('celular') ? 'celular' : "NULL");
+    const telSel = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : 'NULL');
+
     const where = [];
     const params = [];
-
-    // filtra por nome/cpf (cpf sem máscara)
     if (nome) { where.push('nome LIKE ?'); params.push(`%${nome}%`); }
     if (cpfDigits) {
       where.push("REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') LIKE ?");
       params.push(`%${cpfDigits}%`);
     }
-    // se tiver status, mostre só ativos
     if (cols.has('status')) where.push("status = 'ativo'");
 
     const sql = `
@@ -72,8 +63,8 @@ router.get('/', (req, res) => {
 router.get('/inativos', (req, res) => {
   const db = req.app.get('db');
   getClienteColumns(db, ['status', 'telefone', 'celular'], (cols) => {
-    if (!cols.has('status')) return res.json([]); // sem coluna status, não há "inativos"
-    const telSel = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : "NULL");
+    if (!cols.has('status')) return res.json([]); // sem status não há "inativos"
+    const telSel = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : 'NULL');
     const sql = `
       SELECT id_cliente, nome, cpf, ${telSel} AS telefone
       FROM cliente
@@ -86,6 +77,31 @@ router.get('/inativos', (req, res) => {
         return res.status(500).json({ erro: 'Erro ao buscar clientes inativos.' });
       }
       res.json(rows || []);
+    });
+  });
+});
+
+/**
+ * PUT /api/clientes/ativar/:id  → exige coluna "status"
+ */
+router.put('/ativar/:id', (req, res) => {
+  const db = req.app.get('db');
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ erro: 'ID inválido.' });
+
+  getClienteColumns(db, ['status'], (cols) => {
+    if (!cols.has('status')) {
+      return res.status(400).json({ erro: 'Coluna "status" não existe na tabela cliente.' });
+    }
+    db.query("UPDATE cliente SET status = 'ativo' WHERE id_cliente = ?", [id], (err, result) => {
+      if (err) {
+        console.error('⛔ Erro DB PUT /api/clientes/ativar:', err);
+        return res.status(500).json({ erro: 'Erro ao ativar cliente.' });
+      }
+      if (!result || result.affectedRows === 0) {
+        return res.status(404).json({ erro: 'Cliente não encontrado.' });
+      }
+      res.json({ ok: true, affectedRows: result.affectedRows || 0 });
     });
   });
 });
@@ -124,7 +140,7 @@ router.get('/:id', (req, res) => {
   if (!Number.isInteger(id)) return res.status(400).json({ erro: 'ID inválido.' });
 
   getClienteColumns(db, ['telefone', 'celular'], (cols) => {
-    const telSel = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : "NULL");
+    const telSel = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : 'NULL');
     const sql = `
       SELECT id_cliente, nome, cpf, ${telSel} AS telefone
       FROM cliente
@@ -155,7 +171,6 @@ router.post('/', (req, res) => {
   getClienteColumns(db, ['telefone', 'celular'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
-    // Checa duplicidade de CPF
     db.query('SELECT 1 FROM cliente WHERE cpf = ? LIMIT 1', [cpfClean], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup POST /api/clientes:', err);
@@ -163,10 +178,9 @@ router.post('/', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado.' });
 
-      // Monta INSERT conforme colunas existentes
       let sql, params;
       if (telCol) {
-        if (!telefone) telefone = ''; // pode ser vazio
+        if (telefone == null) telefone = '';
         sql = `INSERT INTO cliente (nome, cpf, ${telCol}) VALUES (?, ?, ?)`;
         params = [nome, cpfClean, telefone];
       } else {
@@ -200,7 +214,6 @@ router.put('/:id', (req, res) => {
   getClienteColumns(db, ['telefone', 'celular'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
-    // Dup CPF (outro cliente)
     db.query('SELECT 1 FROM cliente WHERE cpf = ? AND id_cliente <> ? LIMIT 1', [cpfClean, id], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup PUT /api/clientes:', err);
@@ -210,7 +223,7 @@ router.put('/:id', (req, res) => {
 
       let sql, params;
       if (telCol) {
-        if (telefone == null) telefone = ''; // pode ser vazio
+        if (telefone == null) telefone = '';
         sql = `UPDATE cliente SET nome = ?, cpf = ?, ${telCol} = ? WHERE id_cliente = ?`;
         params = [nome, cpfClean, telefone, id];
       } else {
