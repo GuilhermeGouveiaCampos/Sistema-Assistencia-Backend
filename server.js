@@ -13,6 +13,9 @@ const mysql = require("mysql2"); // callback API (compatível com suas rotas)
 
 const app = express();
 
+const COMMIT = process.env.VERCEL_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'local';
+app.get('/version', (_req, res) => res.json({ commit: COMMIT, time: new Date().toISOString() }));
+
 /* ===========================
    Segurança / performance
    =========================== */
@@ -88,20 +91,25 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 /* ===========================
    MySQL (envs no Railway)
    =========================== */
-const db = mysql.createConnection({
+const db = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || process.env.DB_PASS || '',
   database: process.env.DB_NAME || "assistencia_tecnica",
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
   multipleStatements: false,
+  charset: 'utf8mb4',
+  dateStrings: true,   // evita objetos Date virarem TZ diferente
 });
-
-db.connect((err) => {
+db.getConnection((err, conn) => {
   if (err) {
     console.error("❌ Erro ao conectar no MySQL:", err.message);
   } else {
-    console.log("✅ Conectado ao MySQL!");
+    console.log("✅ Pool MySQL pronto");
+    conn.release();
   }
 });
 app.set("db", db);
@@ -131,7 +139,7 @@ app.use("/api/clientes", require("./routes/clientes"));
 app.use("/api/equipamentos", require("./routes/equipamentos"));
 app.use("/api/locais", require("./routes/rfid"));
 app.use("/api/tecnicos", require("./routes/tecnicos"));
-app.use("/api/tecnicos", require("./routes/tecnicosBalanceados"));
+app.use("/api/tecnicos/balanceados", require("./routes/tecnicosBalanceados"));
 app.use("/api/status", require("./routes/status"));
 app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 
@@ -144,6 +152,12 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (err) => {
   console.error("🛑 UncaughtException:", err);
 });
+
+app.use((err, req, res, next) => {
+  console.error('🧯 Erro não tratado:', err?.sqlMessage || err);
+  res.status(500).json({ erro: 'Erro interno no servidor.' });
+});
+
 
 /* ===========================
    Sobe servidor
