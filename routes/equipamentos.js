@@ -205,6 +205,28 @@ router.post('/', upload.array('imagens', 20), (req, res) => {
     });
   });
 });
+/* ===== GET /api/equipamentos/por-cliente/:id ===== */
+router.get('/por-cliente/:id', (req, res) => {
+  const db = req.app.get('db');
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ erro: 'ID inválido.' });
+
+  db.query(
+    `SELECT id_equipamento, tipo, marca, modelo, numero_serie
+     FROM equipamento
+     WHERE id_cliente = ? AND status = 'ativo'
+     ORDER BY id_equipamento DESC`,
+    [id],
+    (err, rows) => {
+      if (err) {
+        console.error('⛔ Erro DB GET /api/equipamentos/por-cliente/:id:', err?.sqlMessage || err);
+        return res.status(500).json({ erro: 'Erro ao buscar equipamentos do cliente.' });
+      }
+      res.json(rows || []);
+    }
+  );
+});
+
 
 /* ===== GET /:id (detalhe) ===== */
 router.get('/:id', (req, res) => {

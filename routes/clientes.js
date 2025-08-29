@@ -6,6 +6,17 @@ const router = express.Router();
 function norm(s) { return String(s || '').trim(); }
 function onlyDigits(s) { return String(s || '').replace(/\D/g, ''); }
 
+/** Normaliza datas para YYYY-MM-DD */
+function toSqlDate(s) {
+  s = String(s || '').trim();
+  if (!s) return null;
+  const m1 = s.match(/^(\d{2})[\/\-\.](\d{2})[\/\-\.](\d{4})$/); // dd/mm/aaaa
+  if (m1) return `${m1[3]}-${m1[2]}-${m1[1]}`;
+  const m2 = s.match(/^(\d{4})[\/\-\.](\d{2})[\/\-\.](\d{2})$/); // aaaa-mm-dd
+  if (m2) return `${m2[1]}-${m2[2]}-${m2[3]}`;
+  return null;
+}
+
 /** Descobre se certas colunas existem na tabela `cliente` */
 function getClienteColumns(db, cols, cb) {
   try {
@@ -46,14 +57,13 @@ router.get('/', (req, res) => {
       params.push('%' + nome + '%');
     }
     if (cpfDigits) {
-      // compara CPF ignorando pontuação
       where.push("REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') LIKE ?");
       params.push('%' + cpfDigits + '%');
     }
     if (cols.has('status')) where.push("status = 'ativo'");
 
     const sql = `
-      SELECT id_cliente, nome, cpf, ${telSel} AS telefone
+      SELECT id_cliente, nome, cpf, ${telSel} AS telefone, data_nascimento, status
       FROM cliente
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY nome ASC
@@ -73,13 +83,13 @@ router.get('/', (req, res) => {
 router.get('/inativos', (req, res) => {
   const db = req.app.get('db');
   getClienteColumns(db, ['status', 'telefone', 'celular'], (cols) => {
-    if (!cols.has('status')) return res.json([]); // sem status não há "inativos"
+    if (!cols.has('status')) return res.json([]);
 
     const telSel = cols.has('telefone') ? 'telefone'
                   : (cols.has('celular') ? 'celular' : 'NULL');
 
     const sql = `
-      SELECT id_cliente, nome, cpf, ${telSel} AS telefone
+      SELECT id_cliente, nome, cpf, ${telSel} AS telefone, data_nascimento, status
       FROM cliente
       WHERE status = 'inativo'
       ORDER BY nome ASC
@@ -120,8 +130,6 @@ router.put('/ativar/:id', (req, res) => {
 
 /**
  * DELETE /api/clientes/:id
- * - se tiver coluna status → soft delete (status='inativo')
- * - senão → delete físico
  */
 router.delete('/:id', (req, res) => {
   const db = req.app.get('db');
@@ -155,7 +163,7 @@ router.get('/:id', (req, res) => {
     const telSel = cols.has('telefone') ? 'telefone'
                   : (cols.has('celular') ? 'celular' : 'NULL');
     const sql = `
-      SELECT id_cliente, nome, cpf, ${telSel} AS telefone
+      SELECT id_cliente, nome, cpf, ${telSel} AS telefone, data_nascimento, status
       FROM cliente
       WHERE id_cliente = ?
       LIMIT 1
@@ -174,12 +182,13 @@ router.get('/:id', (req, res) => {
 /** POST /api/clientes */
 router.post('/', (req, res) => {
   const db = req.app.get('db');
-  let { nome, cpf, telefone } = req.body || {};
+  let { nome, cpf, telefone, data_nascimento, status } = req.body || {};
   if (!nome || !cpf) return res.status(400).json({ erro: 'Nome e CPF são obrigatórios.' });
 
   const cpfClean = onlyDigits(cpf);
+  const dataSQL = toSqlDate(data_nascimento);
 
-  getClienteColumns(db, ['telefone', 'celular'], (cols) => {
+  getClienteColumns(db, ['telefone', 'celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
     db.query('SELECT 1 FROM cliente WHERE cpf = ? LIMIT 1', [cpfClean], (err, dup) => {
@@ -189,16 +198,15 @@ router.post('/', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado.' });
 
-      let sql, params;
-      if (telCol) {
-        if (telefone == null) telefone = '';
-        sql = `INSERT INTO cliente (nome, cpf, ${telCol}) VALUES (?, ?, ?)`;
-        params = [nome, cpfClean, telefone];
-      } else {
-        sql = 'INSERT INTO cliente (nome, cpf) VALUES (?, ?)';
-        params = [nome, cpfClean];
-      }
+      const colsList = ['nome','cpf'];
+      const qms = ['?','?'];
+      const params = [nome, cpfClean];
 
+      if (telCol) { colsList.push(telCol); qms.push('?'); params.push(telefone ?? ''); }
+      if (cols.has('data_nascimento') && dataSQL) { colsList.push('data_nascimento'); qms.push('?'); params.push(dataSQL); }
+      if (cols.has('status')) { colsList.push('status'); qms.push('?'); params.push(status || 'ativo'); }
+
+      const sql = `INSERT INTO cliente (${colsList.join(', ')}) VALUES (${qms.join(', ')})`;
       db.query(sql, params, (err2, result) => {
         if (err2) {
           console.error('⛔ Erro DB INSERT /api/clientes:', err2?.sqlMessage || err2);
@@ -214,14 +222,15 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   const db = req.app.get('db');
   const id = Number(req.params.id);
-  let { nome, cpf, telefone } = req.body || {};
+  let { nome, cpf, telefone, data_nascimento, status } = req.body || {};
 
   if (!Number.isInteger(id)) return res.status(400).json({ erro: 'ID inválido.' });
   if (!nome || !cpf) return res.status(400).json({ erro: 'Nome e CPF são obrigatórios.' });
 
   const cpfClean = onlyDigits(cpf);
+  const dataSQL = toSqlDate(data_nascimento);
 
-  getClienteColumns(db, ['telefone', 'celular'], (cols) => {
+  getClienteColumns(db, ['telefone','celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
     db.query('SELECT 1 FROM cliente WHERE cpf = ? AND id_cliente <> ? LIMIT 1', [cpfClean, id], (err, dup) => {
@@ -231,19 +240,19 @@ router.put('/:id', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado para outro cliente.' });
 
-      let sql, params;
-      if (telCol) {
-        if (telefone == null) telefone = '';
-        sql = `UPDATE cliente SET nome = ?, cpf = ?, ${telCol} = ? WHERE id_cliente = ?`;
-        params = [nome, cpfClean, telefone, id];
-      } else {
-        sql = 'UPDATE cliente SET nome = ?, cpf = ? WHERE id_cliente = ?';
-        params = [nome, cpfClean, id];
-      }
+      const sets = ['nome = ?','cpf = ?'];
+      const params = [nome, cpfClean];
+
+      if (telCol) { sets.push(`${telCol} = ?`); params.push(telefone ?? ''); }
+      if (cols.has('data_nascimento')) { sets.push('data_nascimento = ?'); params.push(dataSQL); }
+      if (cols.has('status') && status) { sets.push('status = ?'); params.push(status); }
+
+      const sql = `UPDATE cliente SET ${sets.join(', ')} WHERE id_cliente = ?`;
+      params.push(id);
 
       db.query(sql, params, (err2, result) => {
         if (err2) {
-          console.error('⛔ Erro DB UPDATE /api/clientes:', err2?.sqlMessage || err2);
+          console.error('⛔ Erro DB UPDATE /api/clientes:', err2?.sqlMessage || err2, '\nSQL:', sql, '\nParams:', params);
           return res.status(500).json({ erro: 'Erro ao atualizar cliente.' });
         }
         if (!result || result.affectedRows === 0) return res.status(404).json({ erro: 'Cliente não encontrado.' });
