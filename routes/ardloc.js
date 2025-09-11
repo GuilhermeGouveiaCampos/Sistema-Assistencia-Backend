@@ -1,123 +1,169 @@
 // backend/routes/ardloc.js
 const express = require('express');
-const router = express.Router();
-const db = require('../db');
+const router  = express.Router();
+const db      = require('../db');
+const { authLeitor } = require('../middleware/authLeitor');
 
-/* =========================
-   Config flexível por ENV (sem quebrar o padrão atual)
-   ========================= */
-const OS_TABLE      = process.env.OS_TABLE      || 'ordenservico';
-const OS_PK         = process.env.OS_PK         || 'id_ordem';
-const OS_LOCAL_COL  = process.env.OS_LOCAL_COL  || 'id_local';
-const OS_STATUS_COL = process.env.OS_STATUS_COL || 'id_status_os';
+/* ============= Utils ============= */
+async function ensureLastUidTable() {
+  await db.query(
+    `CREATE TABLE IF NOT EXISTS rfid_last_uid (
+      id_last INT AUTO_INCREMENT PRIMARY KEY,
+      leitor_codigo VARCHAR(100) NOT NULL UNIQUE,
+      uid VARCHAR(64) NOT NULL,
+      lido_em DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+}
 
-/* =========================
-   Log opcional
-   ========================= */
-async function logEvento({ uid, leitor_id, id_local, id_status, id_ordem, ok, erro }) {
+async function mapStatusByLocal(idScanner) {
+  const [[loc]] = await db.query(
+    `SELECT status_interno FROM local WHERE id_scanner = ? LIMIT 1`,
+    [idScanner]
+  );
+  if (!loc?.status_interno) return null;
+  const [[st]] = await db.query(
+    `SELECT id_status FROM status_os WHERE descricao = ? LIMIT 1`,
+    [loc.status_interno]
+  );
+  return st?.id_status ? Number(st.id_status) : null;
+}
+
+/* ============= Health ============= */
+router.get('/__ping', (_req, res) => res.json({ ok: true, where: 'ardloc' }));
+
+/* ============= Lista leitores (para o front) ============= */
+router.get('/leitores', async (_req, res) => {
   try {
-    await db.execute(
-      `INSERT INTO rfid_eventos (uid, leitor_id, id_local, id_status, id_ordem, sucesso, erro_msg)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [uid, leitor_id, id_local || null, id_status || null, id_ordem || null, ok ? 1 : 0, erro || null]
+    const [rows] = await db.query(
+      `SELECT codigo, nome, id_local, id_scanner, status
+         FROM rfid_leitor
+        ORDER BY codigo ASC`
     );
+    res.json(rows);
   } catch (e) {
-    console.error('Falha ao registrar log RFID:', e.message);
+    console.error('GET /ardloc/leitores erro:', e);
+    res.status(500).json({ erro: 'Falha ao listar leitores' });
   }
-}
+});
 
-/* =========================
-   Mapeamento leitor → local/status
-   ========================= */
-const MAPA_LEITOR_PARA_LOCAL = {
-  'PC-MESA01_COM5': { id_local: 'LOC_MESA_REPARO', id_status: 5 },
-  'RECEPCAO1_USB':  { id_local: 'LOC_RECEPCAO',    id_status: 1 },
-};
+/* ============= Bridge → push-uid (autofill do front) ============= */
+router.post('/push-uid', authLeitor, async (req, res) => {
+  try {
+    const { uid } = req.body || {};
+    if (!uid) return res.status(400).json({ erro: 'uid obrigatório' });
 
-/* =========================
-   Auth simples via API Key
-   ========================= */
-function authByApiKey(req, res, next) {
-  const key = req.header('x-api-key');
-  if (!key || key !== process.env.API_KEY_RFID) {
-    return res.status(401).json({ erro: 'Não autorizado' });
+    await ensureLastUidTable();
+    await db.query(
+      `INSERT INTO rfid_last_uid (leitor_codigo, uid, lido_em)
+       VALUES (?, UPPER(?), NOW())
+       ON DUPLICATE KEY UPDATE uid = VALUES(uid), lido_em = VALUES(lido_em)`,
+      [req.leitor.codigo, uid]
+    );
+
+    res.json({ ok: true, uid: String(uid).toUpperCase() });
+  } catch (e) {
+    console.error('POST /ardloc/push-uid erro:', e);
+    res.status(500).json({ erro: 'Falha ao registrar último UID' });
   }
-  next();
-}
+});
 
+/* ============= Front → last-uid (pegar último UID recente) ============= */
+router.get('/last-uid', async (req, res) => {
+  try {
+    const leitor = req.query.leitor;
+    const maxAgeSec = Number(req.query.maxAgeSec || 10);
+    if (!leitor) return res.status(400).json({ erro: 'parâmetro ?leitor é obrigatório' });
+
+    await ensureLastUidTable();
+    const [rows] = await db.query(
+      `SELECT uid, lido_em FROM rfid_last_uid WHERE leitor_codigo = ? LIMIT 1`,
+      [leitor]
+    );
+    if (!rows.length) return res.json({ uid: null, lido_em: null, recente: false });
+
+    const { uid, lido_em } = rows[0];
+    const diffSec = (Date.now() - new Date(lido_em).getTime()) / 1000;
+    const recente = diffSec <= maxAgeSec;
+
+    res.json({ uid, lido_em, recente });
+  } catch (e) {
+    console.error('GET /ardloc/last-uid erro:', e);
+    res.status(500).json({ erro: 'Falha ao consultar último UID' });
+  }
+});
+
+/* ============= Bridge → event (mover OS pelo UID) ============= */
 /**
- * POST /api/ardloc/event
- * Body: { "uid": "03A1E52C", "leitor_id": "PC-MESA01_COM5", "id_ordem": 123 } (id_ordem opcional)
+ * Body: { uid: "03A1E52C", leitor_id: "PC-MESA01_COM5" }
+ * Headers: x-leitor-key (ou x-api-key) + x-leitor-codigo (igual leitor_id)
  */
-router.post('/event', authByApiKey, async (req, res) => {
-  let { uid, leitor_id, id_ordem } = req.body || {};
-  uid = String(uid || '').trim().toUpperCase();
-
+router.post('/event', authLeitor, async (req, res) => {
+  const { uid, leitor_id } = req.body || {};
   if (!uid || !leitor_id) {
-    await logEvento({ uid, leitor_id, ok: 0, erro: 'uid/leitor_id ausente' });
     return res.status(400).json({ erro: 'uid e leitor_id são obrigatórios' });
   }
 
-  const padrao = MAPA_LEITOR_PARA_LOCAL[leitor_id];
-  if (!padrao) {
-    await logEvento({ uid, leitor_id, ok: 0, erro: 'Leitor não mapeado' });
-    return res.status(400).json({ erro: 'Leitor não mapeado' });
-  }
-
-  let conn;
   try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+    const leitorScanner = req.leitor.id_scanner;
+    if (!leitorScanner) {
+      return res.status(400).json({ erro: 'Leitor não possui id_scanner definido.' });
+    }
+    const [loc] = await db.query(
+      `SELECT 1 FROM local WHERE id_scanner = ? LIMIT 1`, [leitorScanner]
+    );
+    if (!loc.length) return res.status(400).json({ erro: `id_scanner '${leitorScanner}' não existe em local.` });
 
-    // 1) Descobrir OS se não foi enviada
-    let idOrdemFinal = id_ordem;
-    if (!idOrdemFinal) {
-      const [rows] = await conn.execute(
-        'SELECT id_ordem FROM tag_os WHERE uid = ? AND ativo = 1 LIMIT 1',
+    // encontra OS vinculada (rastreamentorfid bind ativo ou tag_os)
+    let idOS = null;
+    const [v1] = await db.query(
+      `SELECT id_os
+         FROM rastreamentorfid
+        WHERE UPPER(uid) = UPPER(?) AND tipo='bind' AND desvinculado_em IS NULL
+        ORDER BY COALESCE(vinculado_em, evento_em) DESC
+        LIMIT 1`,
+      [uid]
+    );
+    if (v1.length) {
+      idOS = v1[0].id_os;
+    } else {
+      const [v2] = await db.query(
+        `SELECT id_ordem AS id_os
+           FROM tag_os
+          WHERE UPPER(uid) = UPPER(?) AND ativo = 1
+          LIMIT 1`,
         [uid]
       );
-      if (!rows.length) {
-        await logEvento({ uid, leitor_id, ok: 0, erro: 'Tag não vinculada a OS' });
-        await conn.rollback(); conn.release();
-        return res.status(404).json({ erro: 'Tag não vinculada a OS' });
-      }
-      idOrdemFinal = rows[0].id_ordem;
+      if (v2.length) idOS = v2[0].id_os;
     }
+    if (!idOS) return res.status(404).json({ erro: 'Tag não vinculada a nenhuma OS ativa.' });
 
-    // 2) Atualiza OS (id_local + status) e timestamp
-    const [upd] = await conn.execute(
-      `UPDATE ${OS_TABLE}
-         SET ${OS_LOCAL_COL} = ?, ${OS_STATUS_COL} = ?, atualizado_em = NOW()
-       WHERE ${OS_PK} = ?`,
-      [padrao.id_local, padrao.id_status, idOrdemFinal]
+    // mapeia status pelo local
+    const statusId = await mapStatusByLocal(leitorScanner);
+
+    // atualiza OS
+    const params = [leitorScanner];
+    let sql = `UPDATE ordenservico SET id_local = ?`;
+    if (statusId) sql += `, id_status_os = ${statusId}`;
+    sql += `, atualizado_em = NOW() WHERE id_os = ? LIMIT 1`;
+    params.push(idOS);
+    await db.query(sql, params);
+
+    // log move
+    await db.query(
+      `INSERT INTO rastreamentorfid (uid, id_os, id_local, tipo, evento_em)
+       VALUES (UPPER(?), ?, ?, 'move', NOW())`,
+      [uid, idOS, req.leitor.id_local || null]
     );
 
-    if (!upd.affectedRows) {
-      throw new Error(`OS não encontrada para ${OS_PK}=${idOrdemFinal}`);
-    }
-
-    // 3) Log do evento
-    await conn.execute(
-      `INSERT INTO rfid_eventos (uid, leitor_id, id_local, id_status, id_ordem, sucesso, erro_msg)
-       VALUES (?, ?, ?, ?, ?, 1, NULL)`,
-      [uid, leitor_id, padrao.id_local, padrao.id_status, idOrdemFinal]
-    );
-
-    await conn.commit(); conn.release();
-
-    return res.json({
+    res.json({
       ok: true,
-      mensagem: 'OS atualizada a partir do RFID',
-      id_ordem: idOrdemFinal,
-      id_local: padrao.id_local,
-      id_status: padrao.id_status
+      mensagem: 'OS atualizada com o local do leitor',
+      data: { uid: String(uid).toUpperCase(), id_os: idOS, novo_local: leitorScanner, id_status_aplicado: statusId || null }
     });
-  } catch (err) {
-    try { if (conn) await conn.rollback(); } catch {}
-    try { if (conn) conn.release(); } catch {}
-    console.error('Erro ao processar evento RFID:', err);
-    await logEvento({ uid, leitor_id, ok: 0, erro: err.message });
-    return res.status(500).json({ erro: 'Falha ao processar evento RFID' });
+  } catch (e) {
+    console.error('POST /ardloc/event erro:', e);
+    res.status(500).json({ erro: 'Falha ao processar evento RFID' });
   }
 });
 
