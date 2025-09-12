@@ -1,30 +1,35 @@
-// bridge-rfid.js
-// Ponte Serial → HTTP: lê UID do Arduino (MFRC522) e envia pro backend
+// backend/routes/bridge-rfid.js
+// Ponte Serial → HTTP: lê UID de Arduino (MFRC522) e envia pro backend (ardloc)
 
 const { SerialPort, ReadlineParser } = require('serialport');
 const axios = require('axios');
 
-/**
- * CONFIG por variáveis de ambiente:
- *  SERIAL_PORT  -> "COM3" (Windows) | "/dev/ttyUSB0" ou "/dev/ttyACM0" (Linux)
- *  BAUD_RATE    -> padrão 115200
- *  API_BASE     -> "http://localhost:3001" (dev) | URL do Railway em produção
- *  LEITOR_ID    -> ex: "PC-MESA01_COM3" (DEVE existir no seu mapeamento do backend)
- *  API_KEY      -> mesma chave configurada no backend (process.env.API_KEY_RFID)
- *
- * Obs: Mantive tudo igual; só mudei a URL p/ /api/ardloc/event e o header p/ x-api-key.
- */
-const SERIAL_PORT = process.env.SERIAL_PORT || 'COM3';
+const SERIAL_PORT = process.env.SERIAL_PORT || 'COM5';
 const BAUD_RATE   = Number(process.env.BAUD_RATE || 115200);
 const API_BASE    = process.env.API_BASE || 'http://localhost:3001';
-const LEITOR_ID   = process.env.LEITOR_ID || 'PC-MESA01_COM3';
-const API_KEY     = process.env.API_KEY || 'SUA_CHAVE_FORTE';
+const LEITOR_ID   = process.env.LEITOR_ID || 'PC-MESA01_COM5';
+const LEITOR_KEY  = process.env.LEITOR_KEY || 'SEGREDO123';
 
-// --- Abre porta serial ---
+console.log('[Bridge] Iniciando...');
+console.log(`[Bridge] SERIAL_PORT=${SERIAL_PORT} BAUD_RATE=${BAUD_RATE}`);
+console.log(`[Bridge] API_BASE=${API_BASE}`);
+console.log(`[Bridge] LEITOR_ID=${LEITOR_ID}`);
+
 let port;
 let parser;
 
+function listPorts() {
+  SerialPort.list().then(list => {
+    console.log('[Serial] Portas disponíveis:');
+    for (const p of list) {
+      console.log(` - ${p.path} | ${p.friendlyName || p.manufacturer || ''}`);
+    }
+  }).catch(() => {});
+}
+
 function openSerial() {
+  listPorts();
+
   port = new SerialPort({ path: SERIAL_PORT, baudRate: BAUD_RATE }, (err) => {
     if (err) {
       console.error('[Serial] Erro ao abrir:', err.message);
@@ -53,36 +58,60 @@ function openSerial() {
 let lastUid = '';
 let lastAt  = 0;
 
-// Trata cada linha JSON vinda do Arduino: {"uid":"04A1B2C3D4"}
+// Normaliza string -> HEX contínuo (8+ chars)
+function extractUid(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+
+  // Tenta JSON: {"uid":"04A1B2C3D4"}
+  if (s.startsWith('{')) {
+    try {
+      const obj = JSON.parse(s);
+      if (obj && obj.uid) {
+        const hex = String(obj.uid).toUpperCase().replace(/[^0-9A-F]/g, '');
+        if (hex.length >= 8) return hex;
+      }
+    } catch {}
+  }
+
+  // Tenta linhas tipo: "Card UID: 03 A1 E5 2C" ou "UID: 03A1E52C"
+  const m = s.match(/([0-9A-F]{2}(\s|:|-)?){4,10}/i);
+  if (m) {
+    const hex = m[0].toUpperCase().replace(/[^0-9A-F]/g, '');
+    if (hex.length >= 8) return hex;
+  }
+
+  return null;
+}
+
 async function onSerialLine(line) {
-  line = (line || '').trim();
-  if (!line.startsWith('{')) return; // ignora ruído
+  const raw = (line || '').toString().trim();
+  if (!raw) return;
+
+  // Log de debug do que chega da serial (com limite)
+  console.log('[Serial<=]', raw.slice(0, 200));
+
+  const uid = extractUid(raw);
+  if (!uid) return; // não parece uma linha com UID
+
+  // Debounce 1.5s para não repetir o mesmo UID
+  const now = Date.now();
+  if (uid === lastUid && (now - lastAt) < 1500) return;
+  lastUid = uid; lastAt = now;
+
+  console.log(`[RFID] Tag lida: ${uid}`);
 
   try {
-    const payload = JSON.parse(line);
-    const uid = String(payload.uid || '').toUpperCase();
-    if (!uid) return;
-
-    // Debounce: evita múltiplos posts do mesmo UID em curto intervalo
-    const now = Date.now();
-    if (uid === lastUid && (now - lastAt) < 1500) return;
-    lastUid = uid; lastAt = now;
-
-    console.log(`[RFID] Tag lida: ${uid}`);
-
-    // 👇 Alterado: endpoint de evento e header de API key
-    const url = `${API_BASE}/api/ardloc/event`;
-    const body = { uid, leitor_id: LEITOR_ID };
-
-    const res = await axios.post(url, body, {
+    const url = `${API_BASE}/api/ardloc/push-uid`;
+    const res = await axios.post(url, { uid }, {
       timeout: 8000,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY, // <- agora valida no middleware do backend
+        'x-leitor-codigo': LEITOR_ID,
+        'x-leitor-key': LEITOR_KEY,
       },
     });
-
-    console.log('[API]', res.status, res.data);
+    console.log('[API]', res.status, JSON.stringify(res.data));
   } catch (err) {
     if (err.response) {
       console.error('[API ERRO]', err.response.status, err.response.data);
@@ -92,5 +121,4 @@ async function onSerialLine(line) {
   }
 }
 
-// Inicializa
 openSerial();
