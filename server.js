@@ -152,6 +152,8 @@ app.use("/api/status", require("./routes/status"));
 app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/locais", require("./routes/rfid"));
 app.use("/api/rfid", require("./routes/leitores"));
+app.use('/api/ardloc', require('./routes/ardloc'));
+
 
 
 // 🔻 Removido: import errado/inútil (quebrava em produção)
