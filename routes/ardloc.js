@@ -59,6 +59,27 @@ async function getPrimaryKey(conn, table) {
 }
 
 /* =========================================================
+   Helpers de conexão (suporta db sem getConnection)
+   ========================================================= */
+async function getConnFlexible(dbObj) {
+  if (dbObj && typeof dbObj.getConnection === 'function') {
+    return await dbObj.getConnection();
+  }
+  if (dbObj && dbObj.pool && typeof dbObj.pool.getConnection === 'function') {
+    return await dbObj.pool.getConnection();
+  }
+  if (dbObj && typeof dbObj.query === 'function') {
+    // usa o próprio db como "conn"
+    return dbObj;
+  }
+  throw new Error('Pool/DB inválido: não há getConnection() nem query()');
+}
+async function safeBegin(conn)   { if (conn && typeof conn.beginTransaction === 'function') await conn.beginTransaction(); }
+async function safeCommit(conn)  { if (conn && typeof conn.commit           === 'function') await conn.commit(); }
+async function safeRollback(conn){ if (conn && typeof conn.rollback         === 'function') await conn.rollback(); }
+async function safeRelease(conn) { if (conn && typeof conn.release          === 'function') await conn.release(); }
+
+/* =========================================================
    AUTH do leitor via headers (x-leitor-codigo / x-leitor-key)
    ========================================================= */
 async function getLeitorByCodigo(codigo) {
@@ -106,7 +127,6 @@ router.post('/leitores', async (req, res) => {
       return res.status(400).json({ erro: 'codigo e api_key_plain são obrigatórios' });
     }
 
-    // valida id_scanner contra tabela local
     if (id_scanner) {
       const [loc] = await db.query(`SELECT 1 FROM local WHERE id_scanner = ? LIMIT 1`, [id_scanner]);
       if (!loc.length) return res.status(400).json({ erro: `id_scanner '${id_scanner}' não existe na tabela local` });
@@ -171,7 +191,7 @@ router.get('/leitores', async (_req, res) => {
 });
 
 /* =========================================================
-   Push / Last UID (para auto-preencher no front)
+   Push / Last UID (auto-preencher no front)
    ========================================================= */
 async function ensureLastUidTable() {
   await db.query(
@@ -239,7 +259,7 @@ router.get('/last-uid', async (req, res) => {
 
 /* =========================================================
    EVENT: leitor RFID → atualiza OS
-   Suporta 2 caminhos:
+   Caminhos:
    A) rastreamentorfid (bind TAG→OS)
    B) rfid_tag (uid/uid_hex→id_equipamento) → OS ativa mais recente
    ========================================================= */
@@ -247,14 +267,13 @@ router.post('/event', authLeitorHeader, async (req, res) => {
   const rawUid = (req.body?.uid || '').toString().trim();
   if (!rawUid) return res.status(400).json({ erro: 'uid obrigatório' });
 
-  // normaliza UID (HEX contínuo)
   const uid = rawUid.toUpperCase().replace(/[^0-9A-F]/g, '');
   const { id_local: leitorLocal, id_scanner: leitorScanner, codigo: leitorCodigo } = req.leitor;
 
   let conn;
   try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+    conn = await getConnFlexible(db);
+    await safeBegin(conn);
 
     // Tabelas potenciais e colunas
     const osTable = await pickTable(conn, ['ordenservico', 'ordemservico', 'ordensservico']);
@@ -273,7 +292,10 @@ router.post('/event', authLeitorHeader, async (req, res) => {
     }
 
     // valida id_scanner na tabela local
-    const [loc] = await conn.query(`SELECT local_instalado, status_interno FROM local WHERE id_scanner = ? LIMIT 1`, [leitorScanner]);
+    const [loc] = await conn.query(
+      `SELECT local_instalado, status_interno FROM local WHERE id_scanner = ? LIMIT 1`,
+      [leitorScanner]
+    );
     if (!loc.length) throw new Error(`id_scanner '${leitorScanner}' não existe em local. Cadastre/ajuste o leitor.`);
     const local_instalado = loc[0].local_instalado;
     const status_interno  = loc[0].status_interno;
@@ -292,9 +314,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           LIMIT 1`,
         [uid]
       );
-      if (vincRows.length) {
-        idOS = vincRows[0].id_os;
-      }
+      if (vincRows.length) idOS = vincRows[0].id_os;
     }
 
     // --------- Caminho B: rfid_tag → id_equipamento → OS ativa ---------
@@ -303,8 +323,6 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       if (!hasRfidTag) {
         throw new Error('Tag não vinculada (tabela rastreamentorfid sem bind e tabela rfid_tag ausente).');
       }
-
-      // tenta achar id_equipamento via uid_hex OU uid
       const [tagRows] = await conn.query(
         `SELECT id_equipamento
            FROM rfid_tag
@@ -312,13 +330,9 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           LIMIT 1`,
         [uid, uid]
       );
-      if (!tagRows.length) {
-        throw new Error('Tag não cadastrada em rfid_tag.');
-      }
+      if (!tagRows.length) throw new Error('Tag não cadastrada em rfid_tag.');
       const id_equip = tagRows[0].id_equipamento;
 
-      // pega OS ativa mais recente desse equipamento
-      // tenta colunas usuais (id_status_os/status) sem depender delas em WHERE além do 'status = ativo'
       const [osRows] = await conn.query(
         `SELECT ${pkCol} AS id_os, ${localCol} AS prev_local, id_status_os
            FROM ${osTable}
@@ -327,13 +341,11 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           LIMIT 1`,
         [id_equip]
       );
-      if (!osRows.length) {
-        throw new Error('Nenhuma OS ativa para esse equipamento.');
-      }
+      if (!osRows.length) throw new Error('Nenhuma OS ativa para esse equipamento.');
       idOS = osRows[0].id_os;
     }
 
-    // ---------- Mapeia status pelo local (se status_interno existir) ----------
+    // ---------- Mapeia status pelo local (se existir coluna) ----------
     let novoStatusId = null;
     const hasStatusOS = await columnExists(conn, osTable, 'id_status_os');
     if (hasStatusOS && status_interno) {
@@ -341,12 +353,10 @@ router.post('/event', authLeitorHeader, async (req, res) => {
         `SELECT id_status FROM status_os WHERE descricao = ? LIMIT 1`,
         [status_interno]
       );
-      if (st?.id_status) {
-        novoStatusId = Number(st.id_status);
-      }
+      if (st?.id_status) novoStatusId = Number(st.id_status);
     }
 
-    // carrega dados anteriores da OS (para auditoria)
+    // carrega dados anteriores (para auditoria)
     const [[prevRow]] = await conn.query(
       `SELECT ${localCol} AS prev_local, ${hasStatusOS ? 'id_status_os' : 'NULL'} AS prev_status
          FROM ${osTable}
@@ -357,7 +367,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
     const prevLocal  = prevRow?.prev_local ?? null;
     const prevStatus = prevRow?.prev_status ?? null;
 
-    // ---------- Atualiza OS: local + (status, se existir coluna) + timestamp ----------
+    // ---------- Atualiza OS ----------
     const hasAtualizadoEm    = await columnExists(conn, osTable, 'atualizado_em');
     const hasDataAtualizacao = await columnExists(conn, osTable, 'data_atualizacao');
 
@@ -378,7 +388,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
 
     await conn.query(sql, params);
 
-    // ---------- Log de rastreamento (se tabela existir) ----------
+    // ---------- Log de rastreamento (se existir) ----------
     if (hasRastreamento) {
       await conn.query(
         `INSERT INTO rastreamentorfid (uid, id_os, id_local, tipo, evento_em)
@@ -387,7 +397,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       );
     }
 
-    // ---------- Auditoria (se helper existir) ----------
+    // ---------- Auditoria (opcional) ----------
     try {
       if (String(prevLocal) !== String(valorLocalNaOS)) {
         await logAudit(conn, {
@@ -417,7 +427,8 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       }
     } catch {}
 
-    await conn.commit(); conn.release();
+    await safeCommit(conn);
+    await safeRelease(conn);
 
     return res.json({
       ok: true,
@@ -431,8 +442,8 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       }
     });
   } catch (err) {
-    try { if (conn) await conn.rollback(); } catch {}
-    try { if (conn) conn.release(); } catch {}
+    await safeRollback(conn);
+    await safeRelease(conn);
     console.error('Erro no /api/ardloc/event:', err);
     return res.status(400).json({ erro: err.message || 'Falha ao processar evento RFID' });
   }
