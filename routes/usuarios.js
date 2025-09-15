@@ -142,11 +142,14 @@ router.get('/:id', async (req, res) => {
 
 // ➕ Cadastrar novo usuário e, se for técnico (id_nivel === 3), também na tabela tecnico
 router.post('/', async (req, res) => {
+  console.log('📩 [POST /api/usuarios] INICIO:', req.body);
+
   let { nome, cpf, email, senha, id_nivel, especializacao, telefone, genero } = req.body;
 
   // normalizações
   cpf = (cpf || '').replace(/\D/g, '');
   id_nivel = Number(id_nivel);
+  genero = String(genero || '').toLowerCase();
 
   const faltando = [];
   if (!nome?.trim()) faltando.push('nome');
@@ -157,6 +160,7 @@ router.post('/', async (req, res) => {
   if (!genero?.trim()) faltando.push('genero');
 
   if (faltando.length) {
+    console.warn('⚠️ Campos faltando:', faltando);
     return res.status(400).json({ erro: `Campos faltando: ${faltando.join(', ')}` });
   }
 
@@ -166,22 +170,27 @@ router.post('/', async (req, res) => {
     if (!especializacao?.trim()) faltandoTec.push('especializacao');
     if (!telefone?.trim()) faltandoTec.push('telefone');
     if (faltandoTec.length) {
+      console.warn('⚠️ Campos técnicos faltando:', faltandoTec);
       return res.status(400).json({ erro: `Campos de técnico faltando: ${faltandoTec.join(', ')}` });
     }
   }
 
   const conn = await db.getConnection();
   try {
+    console.log('🔗 Conexão obtida do pool MySQL');
     await conn.beginTransaction();
+    console.log('✅ Transaction BEGIN');
 
     // hash da senha no backend (frontend envia texto puro)
     const senhaHash = await bcrypt.hash(senha, 10);
+    console.log('🔒 Senha hash gerada');
 
     const [usuarioResult] = await conn.query(
       `INSERT INTO usuario (nome, cpf, email, senha_hash, id_nivel, genero, status)
        VALUES (?, ?, ?, ?, ?, ?, "ativo")`,
       [nome.trim(), cpf, email.trim(), senhaHash, id_nivel, genero]
     );
+    console.log('📝 Usuario inserido com ID:', usuarioResult.insertId);
 
     const id_usuario = usuarioResult.insertId;
 
@@ -191,9 +200,11 @@ router.post('/', async (req, res) => {
         'INSERT INTO tecnico (nome, especializacao, telefone, status, id_usuario) VALUES (?, ?, ?, "ativo", ?)',
         [nome.trim(), especializacao.trim(), telefone.trim(), id_usuario]
       );
+      console.log('👨‍🔧 Técnico inserido vinculado ao usuário:', id_usuario);
     }
 
     await conn.commit();
+    console.log('✅ Transaction COMMIT');
     return res.status(201).json({ mensagem: 'Usuário cadastrado com sucesso.', id_usuario });
   } catch (err) {
     await conn.rollback();
@@ -204,8 +215,10 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao cadastrar usuário.', detalhe: err.message });
   } finally {
     conn.release();
+    console.log('🔓 Conexão liberada');
   }
 });
+
 router.post('/reset-senha', async (req, res) => {
   try {
     let { cpf, nova_senha } = req.body || {};
