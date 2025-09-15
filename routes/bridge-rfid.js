@@ -1,30 +1,46 @@
 // backend/routes/bridge-rfid.js
-// Ponte Serial → HTTP: lê UID de Arduino (MFRC522) e envia pro backend (ardloc)
+// Ponte Serial → HTTP: lê UID do Arduino (MFRC522) e envia pro backend
 
 const { SerialPort, ReadlineParser } = require('serialport');
 const axios = require('axios');
 
+/**
+ * AMBIENTE (pode ajustar via variáveis de ambiente)
+ *  SERIAL_PORT  -> "COM5" (Windows) | "/dev/ttyUSB0" ou "/dev/ttyACM0" (Linux)
+ *  BAUD_RATE    -> 9600 (use igual ao seu sketch do Arduino)
+ *  API_BASE     -> "http://localhost:3001" | URL do Railway
+ *  LEITOR_ID    -> ex: "PC-MESA01_COM5" (igual cadastrado em /api/ardloc/leitores)
+ *  LEITOR_KEY   -> opcional; se cadastrada, vai no header de autenticação
+ *  BRIDGE_MODE  -> "EVENT" (atualiza OS no banco) | "PUSH" (só preenche last-uid p/ front)
+ */
 const SERIAL_PORT = process.env.SERIAL_PORT || 'COM5';
-const BAUD_RATE   = Number(process.env.BAUD_RATE || 115200);
-const API_BASE    = process.env.API_BASE || 'http://localhost:3001';
+const BAUD_RATE   = Number(process.env.BAUD_RATE || 9600);
+const API_BASE    = (process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
 const LEITOR_ID   = process.env.LEITOR_ID || 'PC-MESA01_COM5';
 const LEITOR_KEY  = process.env.LEITOR_KEY || 'SEGREDO123';
+const BRIDGE_MODE = (process.env.BRIDGE_MODE || 'EVENT').toUpperCase(); // EVENT | PUSH
 
 console.log('[Bridge] Iniciando...');
 console.log(`[Bridge] SERIAL_PORT=${SERIAL_PORT} BAUD_RATE=${BAUD_RATE}`);
 console.log(`[Bridge] API_BASE=${API_BASE}`);
 console.log(`[Bridge] LEITOR_ID=${LEITOR_ID}`);
+console.log(`[Bridge] BRIDGE_MODE=${BRIDGE_MODE}`);
 
 let port;
 let parser;
 
 function listPorts() {
-  SerialPort.list().then(list => {
-    console.log('[Serial] Portas disponíveis:');
-    for (const p of list) {
-      console.log(` - ${p.path} | ${p.friendlyName || p.manufacturer || ''}`);
-    }
-  }).catch(() => {});
+  if (typeof SerialPort.list === 'function') {
+    SerialPort.list()
+      .then(list => {
+        console.log('[Serial] Portas disponíveis:');
+        for (const p of list) {
+          const name = p.friendlyName || p.manufacturer || '';
+          console.log(` - ${p.path} | ${name}`);
+        }
+      })
+      .catch(() => {});
+  }
 }
 
 function openSerial() {
@@ -58,12 +74,12 @@ function openSerial() {
 let lastUid = '';
 let lastAt  = 0;
 
-// Normaliza string -> HEX contínuo (8+ chars)
+// Extrai UID de várias formas e normaliza para HEX contínuo (>= 8 chars)
 function extractUid(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
 
-  // Tenta JSON: {"uid":"04A1B2C3D4"}
+  // JSON: {"uid":"04A1B2C3D4"}
   if (s.startsWith('{')) {
     try {
       const obj = JSON.parse(s);
@@ -74,44 +90,43 @@ function extractUid(raw) {
     } catch {}
   }
 
-  // Tenta linhas tipo: "Card UID: 03 A1 E5 2C" ou "UID: 03A1E52C"
+  // Linhas tipo: "Card UID: 03 A1 E5 2C" ou "UID: 03A1E52C"
   const m = s.match(/([0-9A-F]{2}(\s|:|-)?){4,10}/i);
   if (m) {
     const hex = m[0].toUpperCase().replace(/[^0-9A-F]/g, '');
     if (hex.length >= 8) return hex;
   }
-
   return null;
 }
 
-async function onSerialLine(line) {
-  const raw = (line || '').toString().trim();
-  if (!raw) return;
-
-  // Log de debug do que chega da serial (com limite)
-  console.log('[Serial<=]', raw.slice(0, 200));
-
-  const uid = extractUid(raw);
-  if (!uid) return; // não parece uma linha com UID
-
-  // Debounce 1.5s para não repetir o mesmo UID
-  const now = Date.now();
-  if (uid === lastUid && (now - lastAt) < 1500) return;
-  lastUid = uid; lastAt = now;
-
-  console.log(`[RFID] Tag lida: ${uid}`);
-
+async function enviarUid(uid) {
   try {
-    const url = `${API_BASE}/api/ardloc/push-uid`;
-    const res = await axios.post(url, { uid }, {
-      timeout: 8000,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-leitor-codigo': LEITOR_ID,
-        'x-leitor-key': LEITOR_KEY,
-      },
-    });
-    console.log('[API]', res.status, JSON.stringify(res.data));
+    if (BRIDGE_MODE === 'EVENT') {
+      // 🔁 Atualiza OS no banco (mapeia leitor -> local/status no backend)
+      const url = `${API_BASE}/api/ardloc/event`;
+      const body = { uid, leitor_id: LEITOR_ID };
+      const res = await axios.post(url, body, {
+        timeout: 8000,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-leitor-key': LEITOR_KEY, // se cadastrada no leitor
+        },
+      });
+      console.log('[API EVENT]', res.status, JSON.stringify(res.data));
+    } else {
+      // 🟦 Apenas preenche o last-uid para o frontend ler
+      const url = `${API_BASE}/api/ardloc/push-uid`;
+      const body = { uid };
+      const res = await axios.post(url, body, {
+        timeout: 8000,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-leitor-codigo': LEITOR_ID,
+          'x-leitor-key': LEITOR_KEY,
+        },
+      });
+      console.log('[API PUSH]', res.status, JSON.stringify(res.data));
+    }
   } catch (err) {
     if (err.response) {
       console.error('[API ERRO]', err.response.status, err.response.data);
@@ -119,6 +134,24 @@ async function onSerialLine(line) {
       console.error('[Bridge ERRO]', err.message);
     }
   }
+}
+
+async function onSerialLine(line) {
+  const raw = (line || '').toString().trim();
+  if (!raw) return;
+
+  console.log('[Serial<=]', raw.slice(0, 200));
+
+  const uid = extractUid(raw);
+  if (!uid) return;
+
+  // Debounce: ignora o mesmo UID repetido em < 1500ms
+  const now = Date.now();
+  if (uid === lastUid && (now - lastAt) < 1500) return;
+  lastUid = uid; lastAt = now;
+
+  console.log(`[RFID] Tag lida: ${uid}`);
+  await enviarUid(uid);
 }
 
 openSerial();

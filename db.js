@@ -42,12 +42,11 @@ setInterval(async () => {
   }
 }, 20000);
 
-// helper para query com auto-rebuild se pool quebrar
+/// helper para query com auto-rebuild se pool quebrar
 async function query(sql, params) {
   try {
     return await pool.query(sql, params);
   } catch (e) {
-    // se pool quebrou (ex.: credencial ajustada e redeploy), tente recriar
     if (e && /Server has gone away|closed/i.test(e.message || '')) {
       console.warn('♻️ Recriando pool MySQL…');
       buildPool();
@@ -56,4 +55,13 @@ async function query(sql, params) {
   }
 }
 
-module.exports = { query, getPool: () => pool };
+// ✅ >>> ADIÇÃO MINIMAL: expor getConnection, mantendo o que já havia
+async function getConnection() {
+  return pool.getConnection();
+}
+
+module.exports = {
+  query,
+  getConnection,        // <- agora usuarios.js pode usar db.getConnection()
+  getPool: () => pool,  // mantém compatibilidade com quem usa getPool()
+};
