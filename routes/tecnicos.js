@@ -1,24 +1,41 @@
-// routes/tecnicos.js
+// backend/routes/tecnicos.js
 const express = require('express');
 const router = express.Router();
+const db = require('../db'); // ✅ usa o pool PROMISE, igual outras rotas
 
-/* Helper para pegar o pool que o server.js colocou em app */
-function getPool(req) {
-  const db = req.app.get('db');
-  if (!db) throw new Error('Pool MySQL não disponível em app.get("db")');
-  return db;
-}
-
-// 🔍 Listar técnicos ativos
+// 🔍 Listar técnicos ativos (com filtros opcionais nome/cpf)
 router.get('/', async (req, res) => {
-  const db = getPool(req);
   try {
-    const [rows] = await db.query(`
-      SELECT t.id_tecnico, t.nome, t.especializacao, t.telefone, t.status, u.id_usuario
+    const { nome = '', cpf = '' } = req.query;
+
+    let sql = `
+      SELECT 
+        t.id_tecnico,
+        t.nome,
+        t.especializacao,
+        t.telefone,
+        t.status,
+        u.id_usuario,
+        u.cpf
       FROM tecnico t
-      JOIN usuario u ON t.id_usuario = u.id_usuario
+      LEFT JOIN usuario u ON t.id_usuario = u.id_usuario
       WHERE t.status = 'ativo'
-    `);
+    `;
+    const params = [];
+
+    if (nome) {
+      sql += ` AND t.nome LIKE ?`;
+      params.push(`%${nome}%`);
+    }
+    if (cpf) {
+      const onlyDigits = String(cpf).replace(/\D/g, '');
+      sql += ` AND (REPLACE(u.cpf, '.', '') LIKE ? OR REPLACE(REPLACE(t.telefone, '(', ''), ')', '') LIKE ?)`;
+      params.push(`%${onlyDigits}%`, `%${onlyDigits}%`);
+    }
+
+    sql += ` ORDER BY t.nome ASC`;
+
+    const [rows] = await db.query(sql, params);
     res.json(rows);
   } catch (err) {
     console.error('❌ Erro ao listar técnicos:', err);
@@ -27,14 +44,21 @@ router.get('/', async (req, res) => {
 });
 
 // 🔍 Listar técnicos inativos
-router.get('/inativos', async (req, res) => {
-  const db = getPool(req);
+router.get('/inativos', async (_req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT t.id_tecnico, t.nome, t.especializacao, t.telefone, t.status, u.id_usuario
+      SELECT 
+        t.id_tecnico,
+        t.nome,
+        t.especializacao,
+        t.telefone,
+        t.status,
+        u.id_usuario,
+        u.cpf
       FROM tecnico t
-      JOIN usuario u ON t.id_usuario = u.id_usuario
+      LEFT JOIN usuario u ON t.id_usuario = u.id_usuario
       WHERE t.status = 'inativo'
+      ORDER BY t.nome ASC
     `);
     res.json(rows);
   } catch (err) {
@@ -44,8 +68,7 @@ router.get('/inativos', async (req, res) => {
 });
 
 // 🔎 Atribuições por técnico (OS ativas)
-router.get('/atribuicoes', async (req, res) => {
-  const db = getPool(req);
+router.get('/atribuicoes', async (_req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT
@@ -85,7 +108,6 @@ router.get('/atribuicoes', async (req, res) => {
 
 // ➕ Cadastrar técnico
 router.post('/', async (req, res) => {
-  const db = getPool(req);
   const { nome, especializacao, telefone, id_usuario } = req.body;
 
   if (!nome || !especializacao || !telefone || !id_usuario) {
@@ -107,7 +129,6 @@ router.post('/', async (req, res) => {
 
 // 📝 Atualizar técnico
 router.put('/:id', async (req, res) => {
-  const db = getPool(req);
   const { id } = req.params;
   const { nome, especializacao, telefone } = req.body;
 
@@ -130,7 +151,6 @@ router.put('/:id', async (req, res) => {
 
 // ❌ Inativar técnico
 router.delete('/:id', async (req, res) => {
-  const db = getPool(req);
   const { id } = req.params;
   try {
     const [result] = await db.query(`UPDATE tecnico SET status='inativo' WHERE id_tecnico=?`, [id]);
@@ -144,7 +164,6 @@ router.delete('/:id', async (req, res) => {
 
 // ✅ Ativar técnico
 router.put('/ativar/:id', async (req, res) => {
-  const db = getPool(req);
   const { id } = req.params;
   try {
     const [r] = await db.query('UPDATE tecnico SET status="ativo" WHERE id_tecnico=?', [id]);
