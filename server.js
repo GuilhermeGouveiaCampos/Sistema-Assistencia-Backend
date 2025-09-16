@@ -148,6 +148,7 @@ app.use("/api/equipamentos", require("./routes/equipamentos"));
 app.use("/api/locais", require("./routes/rfid"));
 app.use('/api/tecnicos-balanceados', require('./routes/tecnicosBalanceados')); 
 app.use("/api/tecnicos", require("./routes/tecnicos"));
+app.use('/api/tecnicos', require('./routes/tecnicosBalanceados'));   
 app.use("/api/status", require("./routes/status"));
 app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/rfid", require("./routes/leitores"));
