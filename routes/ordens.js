@@ -4,12 +4,22 @@ const router = express.Router();
 const db = require('../db');
 const { logAudit } = require('../utils/audit');
 
+const path = require('path');
+const fs = require('fs/promises');
+const { upload, UPLOAD_ROOT } = require('../middleware/upload'); // <- precisa do middleware (multer)
+
 console.log('🧩 routes/ordens.js carregado');
 
 /**
- * Cadastro de ordem
+ * IMPORTANTE (no seu app principal ex.: app.js/server.js):
+ * app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+ * Assim os arquivos ficam acessíveis em /uploads/os/arquivo.png
  */
-router.post('/', async (req, res) => {
+
+/**
+ * Cadastro de ordem (suporta multipart com campo "imagens")
+ */
+router.post('/', upload.array('imagens', 20), async (req, res) => {
   const {
     id_cliente,
     id_tecnico,
@@ -24,7 +34,10 @@ router.post('/', async (req, res) => {
     tempo_servico
   } = req.body;
 
-  const sql = `
+  const files = req.files || [];
+  const userId = Number(req.headers['x-user-id']) || null;
+
+  const sqlInsert = `
     INSERT INTO ordenservico (
       id_cliente, id_tecnico, id_equipamento, id_local, id_status_os,
       descricao_problema, descricao_servico, data_criacao,
@@ -32,8 +45,12 @@ router.post('/', async (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo')
   `;
 
+  let conn;
   try {
-    const [result] = await db.query(sql, [
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const [result] = await conn.query(sqlInsert, [
       id_cliente,
       id_tecnico,
       id_equipamento,
@@ -47,11 +64,10 @@ router.post('/', async (req, res) => {
       tempo_servico
     ]);
 
-    // 📝 AUDIT
-    const userId = Number(req.headers['x-user-id']) || null;
     const id_os = result.insertId;
 
-    await logAudit(db, {
+    // 📝 AUDIT
+    await logAudit(conn, {
       entityType: 'ordem',
       entityId: id_os,
       action: 'criou',
@@ -59,7 +75,7 @@ router.post('/', async (req, res) => {
       userId
     });
     if (id_local) {
-      await logAudit(db, {
+      await logAudit(conn, {
         entityType: 'ordem',
         entityId: id_os,
         action: 'local',
@@ -70,7 +86,7 @@ router.post('/', async (req, res) => {
       });
     }
     if (id_status_os) {
-      await logAudit(db, {
+      await logAudit(conn, {
         entityType: 'ordem',
         entityId: id_os,
         action: 'status',
@@ -81,10 +97,45 @@ router.post('/', async (req, res) => {
       });
     }
 
-    res.status(201).json({ mensagem: 'Ordem cadastrada com sucesso!' });
+    // 👉 Se houver imagens, salvar metadados
+    if (files.length > 0) {
+      const values = files.map((f) => [
+        id_os,
+        `/uploads/os/${path.basename(f.path)}`, // URL pública
+        f.originalname,
+        f.mimetype,
+        f.size,
+      ]);
+
+      await conn.query(
+        'INSERT INTO os_imagem (id_os, url, original_name, mime, size) VALUES ?',
+        [values]
+      );
+
+      await logAudit(conn, {
+        entityType: 'ordem',
+        entityId: id_os,
+        action: 'imagem_add',
+        note: `+${files.length} imagem(ns)`,
+        userId
+      });
+    }
+
+    await conn.commit();
+    res.status(201).json({ mensagem: 'Ordem cadastrada com sucesso!', id_os });
   } catch (err) {
+    if (conn) await conn.rollback();
+
+    // apaga arquivos que já subiram, em caso de erro
+    const files = req.files || [];
+    await Promise.allSettled(
+      files.map((f) => fs.unlink(f.path).catch(() => {}))
+    );
+
     console.error('❌ Erro ao cadastrar ordem de serviço:', err);
     res.status(500).json({ erro: 'Erro ao cadastrar ordem de serviço.' });
+  } finally {
+    if (conn) conn.release();
   }
 });
 
@@ -136,7 +187,6 @@ router.get('/locais', async (_req, res) => {
       `
     );
 
-    // Normaliza tipos para o front (string/número)
     const parsed = rows.map((r) => ({
       id_scanner: String(r.id_scanner || ''),
       local_instalado: String(r.local_instalado || ''),
@@ -164,7 +214,7 @@ router.get('/menos-carregados', async (_req, res) => {
       ORDER BY total_os ASC
       LIMIT 1
     `);
-  res.json(rows[0] || null);
+    res.json(rows[0] || null);
   } catch (err) {
     console.error('Erro ao buscar técnico menos carregado:', err);
     res.status(500).json({ erro: 'Erro interno ao buscar técnico balanceado' });
@@ -190,7 +240,6 @@ router.get('/:id/auditoria', async (req, res) => {
         u.nome AS usuario,
         a.created_at,
 
-        /* valor ANTERIOR traduzido */
         CASE 
           WHEN a.field = 'id_local' THEN COALESCE(
             (SELECT l.local_instalado FROM local l WHERE l.id_scanner = a.old_value LIMIT 1),
@@ -203,7 +252,6 @@ router.get('/:id/auditoria', async (req, res) => {
           ELSE a.old_value
         END AS old_label,
 
-        /* valor NOVO traduzido */
         CASE 
           WHEN a.field = 'id_local' THEN COALESCE(
             (SELECT l.local_instalado FROM local l WHERE l.id_scanner = a.new_value LIMIT 1),
@@ -231,6 +279,64 @@ router.get('/:id/auditoria', async (req, res) => {
 });
 
 /**
+ * ===== Imagens da OS =====
+ */
+
+// Lista imagens da OS
+router.get('/:id/imagens', async (req, res) => {
+  const { id } = req.params;
+  if (!/^\d+$/.test(id)) return res.status(400).json({ erro: 'ID inválido' });
+
+  try {
+    const [rows] = await db.query(
+      'SELECT id_imagem, url, original_name, mime, size, created_at FROM os_imagem WHERE id_os = ? ORDER BY id_imagem DESC',
+      [id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('❌ Erro ao listar imagens:', err);
+    res.status(500).json({ erro: 'Erro ao listar imagens.' });
+  }
+});
+
+// Deleta 1 imagem da OS (remove arquivo e registro)
+router.delete('/:id/imagens/:id_img', async (req, res) => {
+  const { id, id_img } = req.params;
+  const userId = Number(req.headers['x-user-id']) || null;
+
+  if (!/^\d+$/.test(id) || !/^\d+$/.test(id_img)) {
+    return res.status(400).json({ erro: 'ID inválido' });
+  }
+
+  try {
+    const [[img]] = await db.query(
+      'SELECT url FROM os_imagem WHERE id_imagem = ? AND id_os = ?',
+      [id_img, id]
+    );
+    if (!img) return res.status(404).json({ erro: 'Imagem não encontrada.' });
+
+    const filename = path.basename(img.url);
+    const absPath = path.join(UPLOAD_ROOT, filename);
+
+    await fs.unlink(absPath).catch(() => {});
+    await db.query('DELETE FROM os_imagem WHERE id_imagem = ?', [id_img]);
+
+    await logAudit(db, {
+      entityType: 'ordem',
+      entityId: Number(id),
+      action: 'imagem_del',
+      note: `Removeu imagem ${filename}`,
+      userId,
+    });
+
+    res.json({ mensagem: 'Imagem removida com sucesso.' });
+  } catch (err) {
+    console.error('❌ Erro ao remover imagem:', err);
+    res.status(500).json({ erro: 'Erro ao remover imagem.' });
+  }
+});
+
+/**
  * Atualizar ordem + controlar timer (diagnóstico/orçamento)
  */
 router.put('/:id', async (req, res) => {
@@ -238,19 +344,14 @@ router.put('/:id', async (req, res) => {
   let { descricao_problema, id_local, id_status } = req.body || {};
   const userId = Number(req.headers['x-user-id']) || null;
 
-  // validar id_os
   if (!/^\d+$/.test(String(id_ordem))) {
     return res.status(400).json({ erro: 'ID inválido' });
   }
 
-  // id_local é STRING no schema (ex.: LOC001)
   const idLocalStr = String(id_local || '').trim();
-
-  // tenta usar id_status do body; se vazio, resolvemos pelo local
   let idStatusNum = Number(id_status);
 
   try {
-    // estado anterior
     const [prevRows] = await db.query(
       `SELECT id_local, id_status_os, descricao_problema, data_inicio_reparo, data_fim_reparo, tempo_servico
         FROM ordenservico
@@ -260,7 +361,6 @@ router.put('/:id', async (req, res) => {
     if (!prevRows.length) return res.status(404).json({ erro: 'Ordem não encontrada' });
     const prev = prevRows[0];
 
-    // se id_status não veio, mapeia pelo local escolhido (status_interno -> status_os.id_status)
     if (!idStatusNum || Number.isNaN(idStatusNum)) {
       const [[loc]] = await db.query(
         `SELECT status_interno, local_instalado
@@ -277,12 +377,10 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // validação final
     if (!descricao_problema || !idLocalStr || !idStatusNum || Number.isNaN(idStatusNum)) {
       return res.status(400).json({ erro: 'Campos obrigatórios ausentes' });
     }
 
-    // helpers
     const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const isBancadaDiag = (nomeLocal) => {
       const n = norm(nomeLocal);
@@ -293,7 +391,6 @@ router.put('/:id', async (req, res) => {
       );
     };
 
-    // nomes dos locais (antes/depois)
     const [[prevLocalRow]] = await db.query(
       `SELECT local_instalado FROM local WHERE id_scanner = ?`,
       [prev.id_local]
@@ -306,7 +403,6 @@ router.put('/:id', async (req, res) => {
     const prevOnBench = isBancadaDiag(prevLocalRow?.local_instalado);
     const newOnBench  = isBancadaDiag(newLocalRow?.local_instalado);
 
-    // atualizar campos principais
     const [updMain] = await db.query(
       `UPDATE ordenservico
           SET descricao_problema = ?,
@@ -320,11 +416,9 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Ordem não encontrada' });
     }
 
-    // ---------------- AUDITORIA (após o UPDATE principal) ----------------
     const localChanged   = String(prev.id_local)     !== String(idLocalStr);
     const statusChanged  = Number(prev.id_status_os) !== Number(idStatusNum);
 
-    // Descobre qual seria o status mapeado para o NOVO local
     const [[mapTo]] = await db.query(
       `SELECT status_interno FROM local WHERE id_scanner = ?`,
       [idLocalStr]
@@ -338,7 +432,6 @@ router.put('/:id', async (req, res) => {
       if (ms?.id_status) mappedStatusId = Number(ms.id_status);
     }
 
-    // Labels legíveis para status e local
     const [[oldStatusRow]] = await db.query(
       'SELECT descricao FROM status_os WHERE id_status = ?',
       [prev.id_status_os]
@@ -353,7 +446,6 @@ router.put('/:id', async (req, res) => {
     const oldLocalLabel = prevLocalRow?.local_instalado || String(prev.id_local);
     const newLocalLabel = newLocalRow?.local_instalado || String(idLocalStr);
 
-    // ✅ Regra: mudou Local e o novo Status é exatamente o mapeado pelo novo Local?
     const aggregateLocalAndStatus =
       localChanged &&
       statusChanged &&
@@ -361,7 +453,6 @@ router.put('/:id', async (req, res) => {
       Number(idStatusNum) === mappedStatusId;
 
     if (aggregateLocalAndStatus) {
-      // 👉 Logue só UMA linha de "Local" (campo id_local)
       await logAudit(db, {
         entityType: 'ordem',
         entityId: Number(id_ordem),
@@ -369,12 +460,10 @@ router.put('/:id', async (req, res) => {
         field: 'id_local',
         oldValue: String(prev.id_local),
         newValue: String(idLocalStr),
-        // guarda observação do status derivado (se quiser ver depois no banco)
         note: `Status (derivado): ${oldStatusLabel} → ${newStatusLabel}`,
         userId
       });
     } else {
-      // 👉 Caso contrário, registre separadamente o que mudou
       if (localChanged) {
         await logAudit(db, {
           entityType: 'ordem',
@@ -401,7 +490,7 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // TIMER — entrou na bancada: inicia ciclo se não estiver rodando
+    // TIMER — entrou na bancada
     if (!prevOnBench && newOnBench) {
       await db.query(
         `UPDATE ordenservico
@@ -421,7 +510,7 @@ router.put('/:id', async (req, res) => {
       });
     }
 
-    // TIMER — saiu da bancada: registra minutos e encerra ciclo
+    // TIMER — saiu da bancada
     if (prevOnBench && !newOnBench) {
       const [[minsRow]] = await db.query(
         `SELECT IF(data_inicio_reparo IS NULL, NULL, TIMESTAMPDIFF(MINUTE, data_inicio_reparo, NOW())) AS minutos
@@ -482,7 +571,6 @@ router.put('/ativar/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Ordem não encontrada ou já está ativa.' });
     }
 
-    // 📝 AUDIT
     await logAudit(db, {
       entityType: 'ordem',
       entityId: Number(id),
@@ -520,7 +608,6 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Ordem não encontrada.' });
     }
 
-    // 📝 AUDIT
     await logAudit(db, {
       entityType: 'ordem',
       entityId: Number(id),
@@ -539,7 +626,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 /**
- * Detalhes da ordem
+ * Detalhes da ordem (agora inclui array de imagens)
  */
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
@@ -564,22 +651,28 @@ router.get('/:id', async (req, res) => {
       e.tipo,
       e.marca,
       e.modelo,
-      e.numero_serie,
-      e.imagem
+      e.numero_serie
     FROM ordenservico o
     JOIN cliente     c ON o.id_cliente     = c.id_cliente
     JOIN tecnico     t ON o.id_tecnico     = t.id_tecnico
     JOIN equipamento e ON o.id_equipamento = e.id_equipamento
     JOIN status_os   s ON o.id_status_os   = s.id_status
     WHERE o.id_os = ?
+    LIMIT 1
   `;
 
   try {
     const [rows] = await db.query(sql, [id]);
-    if (rows.length === 0) {
+    if (!rows.length) {
       return res.status(404).json({ erro: 'Ordem não encontrada' });
     }
-    res.json(rows[0]);
+
+    const [imagens] = await db.query(
+      'SELECT id_imagem, url, original_name, mime, size, created_at FROM os_imagem WHERE id_os = ? ORDER BY id_imagem DESC',
+      [id]
+    );
+
+    res.json({ ...rows[0], imagens });
   } catch (err) {
     console.error('❌ Erro ao buscar detalhes da ordem:', err);
     res.status(500).json({ erro: 'Erro interno ao buscar ordem' });

@@ -13,8 +13,13 @@ const mysql = require("mysql2"); // callback API (compatível com suas rotas)
 
 const app = express();
 
-const COMMIT = process.env.VERCEL_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'local';
-app.get('/version', (_req, res) => res.json({ commit: COMMIT, time: new Date().toISOString() }));
+const COMMIT =
+  process.env.VERCEL_GIT_COMMIT_SHA ||
+  process.env.RAILWAY_GIT_COMMIT_SHA ||
+  "local";
+app.get("/version", (_req, res) =>
+  res.json({ commit: COMMIT, time: new Date().toISOString() })
+);
 
 /* ===========================
    Segurança / performance
@@ -26,7 +31,9 @@ app.use(
 );
 app.use(compression());
 app.use(express.json({ limit: "2mb" }));
-app.use(morgan(":method :url :status :res[content-length] - :response-time ms"));
+app.use(
+  morgan(":method :url :status :res[content-length] - :response-time ms")
+);
 
 // Confiar em proxy (Railway/Render/Heroku/NGINX)
 app.set("trust proxy", 1);
@@ -94,6 +101,16 @@ app.use("/api", apiLimiter);
 /* ===========================
    Arquivos estáticos (uploads)
    =========================== */
+// Em PRODUÇÃO (Railway com Volume), defina UPLOAD_DIR=/data/uploads/os
+// Em DEV, usa ./uploads/os por padrão
+const uploadsRoot = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(__dirname, "uploads", "os");
+
+// URLs salvas no banco ficarão assim: /uploads/os/<arquivo>
+app.use("/uploads/os", express.static(uploadsRoot, { maxAge: "7d" }));
+
+// (opcional) compat com outras pastas em /uploads que você já use
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* ===========================
@@ -103,14 +120,14 @@ const db = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || process.env.DB_PASS || '',
+  password: process.env.DB_PASSWORD || process.env.DB_PASS || "",
   database: process.env.DB_NAME || "assistencia_tecnica",
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   multipleStatements: false,
-  charset: 'utf8mb4',
-  dateStrings: true,   // evita objetos Date virarem TZ diferente
+  charset: "utf8mb4",
+  dateStrings: true, // evita objetos Date virarem TZ diferente
 });
 db.getConnection((err, conn) => {
   if (err) {
@@ -146,18 +163,13 @@ app.use("/api/login", require("./routes/login"));
 app.use("/api/clientes", require("./routes/clientes"));
 app.use("/api/equipamentos", require("./routes/equipamentos"));
 app.use("/api/locais", require("./routes/rfid"));
-app.use('/api/tecnicos-balanceados', require('./routes/tecnicosBalanceados')); 
+app.use("/api/tecnicos-balanceados", require("./routes/tecnicosBalanceados"));
 app.use("/api/tecnicos", require("./routes/tecnicos"));
-app.use('/api/tecnicos', require('./routes/tecnicosBalanceados'));   
+app.use("/api/tecnicos", require("./routes/tecnicosBalanceados")); // mantém compat
 app.use("/api/status", require("./routes/status"));
 app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/rfid", require("./routes/leitores"));
-app.use('/api/ardloc', require('./routes/ardloc'));
-
-
-
-// 🔻 Removido: import errado/inútil (quebrava em produção)
-// const { authLeitor } = require('../middleware/authLeitor');
+app.use("/api/ardloc", require("./routes/ardloc"));
 
 /* ===========================
    Tratamento de erros globais
@@ -170,8 +182,8 @@ process.on("uncaughtException", (err) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('🧯 Erro não tratado:', err?.sqlMessage || err);
-  res.status(500).json({ erro: 'Erro interno no servidor.' });
+  console.error("🧯 Erro não tratado:", err?.sqlMessage || err);
+  res.status(500).json({ erro: "Erro interno no servidor." });
 });
 
 /* ===========================
