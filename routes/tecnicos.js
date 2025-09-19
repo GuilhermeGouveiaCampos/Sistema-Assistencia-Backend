@@ -175,26 +175,22 @@ router.put('/ativar/:id', async (req, res) => {
   }
 });
 
-// DETALHES DO TÉCNICO (usar antes do '/:id')
+// 🔎 Detalhes do técnico (rota preferida p/ o front)
 router.get('/:id/detalhes', async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
-    return res.status(400).json({ erro: 'ID inválido.' });
-  }
-
   try {
-    // use o schema se precisar: assistencia_tecnica.tecnico / assistencia_tecnica.usuario
+    const { id } = req.params;
+
     const [rows] = await db.query(
       `
-      SELECT
+      SELECT 
         t.id_tecnico,
-        t.nome                AS nome_tecnico,
+        t.nome,
         t.especializacao,
         t.telefone,
         t.status,
         u.id_usuario,
         u.cpf,
-        NULL                  AS data_nascimento  -- placeholder, para não quebrar
+        NULL AS data_nascimento  -- ajuste aqui quando tiver a coluna na tabela 'usuario'
       FROM tecnico t
       LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
       WHERE t.id_tecnico = ?
@@ -202,14 +198,42 @@ router.get('/:id/detalhes', async (req, res) => {
       [id]
     );
 
-    if (!rows.length) {
-      return res.status(404).json({ erro: 'Técnico não encontrado.' });
-    }
-
+    if (!rows.length) return res.status(404).json({ erro: 'Técnico não encontrado.' });
     res.json(rows[0]);
   } catch (err) {
-    console.error('❌ Erro em GET /api/tecnicos/:id/detalhes:', err);
-    res.status(500).json({ erro: 'Erro ao buscar detalhes do técnico.' });
+    console.error('❌ Erro ao buscar técnico:', err);
+    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
+  }
+});
+
+// 🔎 Compat: /api/tecnicos/:id (fallback)
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.query(
+      `
+      SELECT 
+        t.id_tecnico,
+        t.nome,
+        t.especializacao,
+        t.telefone,
+        t.status,
+        u.id_usuario,
+        u.cpf,
+        NULL AS data_nascimento  -- ajuste aqui quando tiver a coluna na tabela 'usuario'
+      FROM tecnico t
+      LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
+      WHERE t.id_tecnico = ?
+      `,
+      [id]
+    );
+
+    if (!rows.length) return res.status(404).json({ erro: 'Técnico não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('❌ Erro ao buscar técnico:', err);
+    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
   }
 });
 
