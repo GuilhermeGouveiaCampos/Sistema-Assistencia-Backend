@@ -1,8 +1,8 @@
 // backend/routes/ardloc.js
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const router = express.Router();
-const db = require('../db');
+const bcrypt  = require('bcryptjs');
+const router  = express.Router();
+const db      = require('../db');
 
 // audit opcional (se existir)
 let logAudit = async () => {};
@@ -74,10 +74,10 @@ async function getConnFlexible(dbObj) {
   }
   throw new Error('Pool/DB inválido: não há getConnection() nem query()');
 }
-async function safeBegin(conn)   { if (conn && typeof conn.beginTransaction === 'function') await conn.beginTransaction(); }
-async function safeCommit(conn)  { if (conn && typeof conn.commit           === 'function') await conn.commit(); }
-async function safeRollback(conn){ if (conn && typeof conn.rollback         === 'function') await conn.rollback(); }
-async function safeRelease(conn) { if (conn && typeof conn.release          === 'function') await conn.release(); }
+async function safeBegin(conn)    { if (conn && typeof conn.beginTransaction === 'function') await conn.beginTransaction(); }
+async function safeCommit(conn)   { if (conn && typeof conn.commit           === 'function') await conn.commit(); }
+async function safeRollback(conn) { if (conn && typeof conn.rollback         === 'function') await conn.rollback(); }
+async function safeRelease(conn)  { if (conn && typeof conn.release          === 'function') await conn.release(); }
 
 /* =========================================================
    AUTH do leitor via headers (x-leitor-codigo / x-leitor-key)
@@ -177,15 +177,32 @@ router.put('/leitores/:codigo/key', async (req, res) => {
   }
 });
 
-// GET /api/ardloc/leitores
+// GET /api/ardloc/leitores  (para o select do front)
 router.get('/leitores', async (_req, res) => {
   try {
+    // 1) Tenta leitores ativos cadastrados
     const [rows] = await db.query(
-      'SELECT id_leitor, codigo, nome, id_local, id_scanner, status, criado_em FROM rfid_leitor ORDER BY id_leitor DESC'
+      `SELECT codigo, COALESCE(NULLIF(nome,''), codigo) AS nome
+         FROM rfid_leitor
+        WHERE status IS NULL OR status = 'ativo'
+        ORDER BY nome, codigo`
     );
-    res.json(rows);
+    if (rows.length) {
+      return res.json(rows.map(r => ({ codigo: String(r.codigo), nome: String(r.nome) })));
+    }
+
+    // 2) Fallback: usa locais ativos como "leitores"
+    const [locais] = await db.query(
+      `SELECT id_scanner AS codigo, local_instalado AS nome
+         FROM local
+        WHERE status = 'ativo'
+          AND id_scanner IS NOT NULL
+          AND id_scanner <> ''
+        ORDER BY local_instalado`
+    );
+    return res.json(locais.map(r => ({ codigo: String(r.codigo), nome: String(r.nome) })));
   } catch (err) {
-    console.error(err);
+    console.error('GET /ardloc/leitores error:', err);
     res.status(500).json({ erro: 'Falha ao listar leitores' });
   }
 });
@@ -230,7 +247,7 @@ router.post('/push-uid', authLeitorHeader, async (req, res) => {
 // GET /api/ardloc/last-uid?leitor=CODIGO&maxAgeSec=10  (front → backend)
 router.get('/last-uid', async (req, res) => {
   try {
-    const leitor = req.query.leitor;
+    const leitor    = req.query.leitor;
     const maxAgeSec = Number(req.query.maxAgeSec || 10);
 
     if (!leitor) return res.status(400).json({ erro: 'parâmetro ?leitor é obrigatório' });
