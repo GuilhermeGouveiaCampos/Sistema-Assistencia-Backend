@@ -175,4 +175,39 @@ router.put('/ativar/:id', async (req, res) => {
   }
 });
 
+/**
+ * ✅ Detalhes de um técnico
+ * GET /api/tecnicos/:id
+ * Retorna: id_tecnico, nome, telefone, data_nascimento (YYYY-MM-DD), cpf
+ *
+ * ⚠️ Se :id não for numérico, passa adiante (evita conflito com /menos-carregados/... em outro router).
+ */
+router.get('/:id', async (req, res, next) => {
+  const { id } = req.params;
+  if (!/^\d+$/.test(id)) return next();
+
+  try {
+    const sql = `
+      SELECT
+        t.id_tecnico,
+        t.nome,
+        t.telefone,
+        DATE_FORMAT(t.data_nascimento, '%Y-%m-%d') AS data_nascimento,
+        u.cpf
+      FROM tecnico t
+      LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
+      WHERE t.id_tecnico = ?
+      LIMIT 1
+    `;
+    const [rows] = await db.query(sql, [Number(id)]);
+    if (!rows.length) {
+      return res.status(404).json({ erro: 'Técnico não encontrado.' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('❌ Erro ao buscar técnico:', err);
+    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
+  }
+});
+
 module.exports = router;
