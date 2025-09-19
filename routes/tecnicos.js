@@ -175,39 +175,43 @@ router.put('/ativar/:id', async (req, res) => {
   }
 });
 
-/**
- * ✅ Detalhes de um técnico
- * GET /api/tecnicos/:id
- * Retorna: id_tecnico, nome, telefone, data_nascimento (YYYY-MM-DD), cpf
- *
- * ⚠️ Se :id não for numérico, passa adiante (evita conflito com /menos-carregados/... em outro router).
- */
-router.get('/:id', async (req, res, next) => {
-  const { id } = req.params;
-  if (!/^\d+$/.test(id)) return next();
+// DETALHES DO TÉCNICO (usar antes do '/:id')
+router.get('/:id/detalhes', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ erro: 'ID inválido.' });
+  }
 
   try {
-    const sql = `
+    // use o schema se precisar: assistencia_tecnica.tecnico / assistencia_tecnica.usuario
+    const [rows] = await db.query(
+      `
       SELECT
         t.id_tecnico,
-        t.nome,
+        t.nome                AS nome_tecnico,
+        t.especializacao,
         t.telefone,
-        DATE_FORMAT(t.data_nascimento, '%Y-%m-%d') AS data_nascimento,
-        u.cpf
+        t.status,
+        u.id_usuario,
+        u.cpf,
+        NULL                  AS data_nascimento  -- placeholder, para não quebrar
       FROM tecnico t
       LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
       WHERE t.id_tecnico = ?
-      LIMIT 1
-    `;
-    const [rows] = await db.query(sql, [Number(id)]);
+      `,
+      [id]
+    );
+
     if (!rows.length) {
       return res.status(404).json({ erro: 'Técnico não encontrado.' });
     }
+
     res.json(rows[0]);
   } catch (err) {
-    console.error('❌ Erro ao buscar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
+    console.error('❌ Erro em GET /api/tecnicos/:id/detalhes:', err);
+    res.status(500).json({ erro: 'Erro ao buscar detalhes do técnico.' });
   }
 });
+
 
 module.exports = router;
