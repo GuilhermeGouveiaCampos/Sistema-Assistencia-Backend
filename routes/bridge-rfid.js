@@ -4,15 +4,6 @@
 const { SerialPort, ReadlineParser } = require('serialport');
 const axios = require('axios');
 
-/**
- * AMBIENTE (pode ajustar via variáveis de ambiente)
- *  SERIAL_PORT  -> "COM5" (Windows) | "/dev/ttyUSB0" ou "/dev/ttyACM0" (Linux)
- *  BAUD_RATE    -> 9600 (use igual ao seu sketch do Arduino)
- *  API_BASE     -> "http://localhost:3001" | URL do Railway (sem / no final)
- *  LEITOR_ID    -> ex: "PC-MESA01_COM5" (igual cadastrado em /api/ardloc/leitores)
- *  LEITOR_KEY   -> opcional; se cadastrada, vai no header de autenticação
- *  BRIDGE_MODE  -> "EVENT" (atualiza OS no banco) | "PUSH" (só preenche last-uid p/ front)
- */
 const SERIAL_PORT = process.env.SERIAL_PORT || 'COM5';
 const BAUD_RATE   = Number(process.env.BAUD_RATE || 9600);
 const API_BASE    = (process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
@@ -102,33 +93,27 @@ function extractUid(raw) {
 async function enviarUid(uid) {
   try {
     if (BRIDGE_MODE === 'EVENT') {
-      // 🔁 Atualiza OS no banco (mapeia leitor -> local/status no backend)
       const url = `${API_BASE}/api/ardloc/event`;
-      // No modo EVENT, a autenticação do leitor é via headers:
-      //   x-leitor-codigo (obrigatório) + x-leitor-key (se cadastrada)
-      const body = { uid }; // não precisa enviar leitor_id no corpo
-      const res = await axios.post(url, body, {
-        timeout: 8000,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-leitor-codigo': LEITOR_ID, // ✅ AGORA VAI NO HEADER
-          'x-leitor-key': LEITOR_KEY,   // ✅ chave (se cadastrada no leitor)
-        },
-      });
-      console.log('[API EVENT]', res.status, JSON.stringify(res.data));
+      const body = { uid }; // autenticação é via headers
+      const headers = {
+        'Content-Type': 'application/json',
+        'x-leitor-codigo': LEITOR_ID,
+        'x-leitor-key': LEITOR_KEY,
+      };
+      console.log('[Bridge→API EVENT] POST', url, { body, headers });
+      const res = await axios.post(url, body, { timeout: 8000, headers });
+      console.log('[API EVENT ←]', res.status, res.data);
     } else {
-      // 🟦 Apenas preenche o last-uid para o frontend ler
       const url = `${API_BASE}/api/ardloc/push-uid`;
       const body = { uid };
-      const res = await axios.post(url, body, {
-        timeout: 8000,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-leitor-codigo': LEITOR_ID,
-          'x-leitor-key': LEITOR_KEY,
-        },
-      });
-      console.log('[API PUSH]', res.status, JSON.stringify(res.data));
+      const headers = {
+        'Content-Type': 'application/json',
+        'x-leitor-codigo': LEITOR_ID,
+        'x-leitor-key': LEITOR_KEY,
+      };
+      console.log('[Bridge→API PUSH] POST', url, { body, headers });
+      const res = await axios.post(url, body, { timeout: 8000, headers });
+      console.log('[API PUSH ←]', res.status, res.data);
     }
   } catch (err) {
     if (err.response) {
@@ -148,7 +133,6 @@ async function onSerialLine(line) {
   const uid = extractUid(raw);
   if (!uid) return;
 
-  // Debounce: ignora o mesmo UID repetido em < 1500ms
   const now = Date.now();
   if (uid === lastUid && (now - lastAt) < 1500) return;
   lastUid = uid; lastAt = now;

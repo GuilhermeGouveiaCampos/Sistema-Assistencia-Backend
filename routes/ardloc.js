@@ -12,6 +12,7 @@ try { ({ logAudit } = require('../utils/audit')); } catch { /* segue sem auditor
    Sanidade
    ========================================================= */
 router.get('/__ping', (_req, res) => {
+  console.log('[DEBUG][__ping] ardloc ok');
   res.json({ ok: true, where: 'ardloc' });
 });
 
@@ -95,9 +96,18 @@ async function authLeitorHeader(req, res, next) {
   try {
     const codigo = req.header('x-leitor-codigo') || req.header('x-leitor-id') || null;
     const key    = req.header('x-leitor-key')    || req.header('x-api-key')   || null;
+
+    console.log('[DEBUG][authLeitorHeader] headers =', {
+      'x-leitor-codigo': req.header('x-leitor-codigo'),
+      'x-leitor-id': req.header('x-leitor-id'),
+      'x-leitor-key': key ? '(recebida)' : '(vazia)'
+    });
+
     if (!codigo || !key) return res.status(401).json({ erro: 'Cabeçalhos do leitor ausentes' });
 
     const leitor = await getLeitorByCodigo(codigo);
+    console.log('[DEBUG][authLeitorHeader] leitor encontrado =', leitor && { codigo: leitor.codigo, id_scanner: leitor.id_scanner, status: leitor.status });
+
     if (!leitor) return res.status(401).json({ erro: 'Leitor não cadastrado' });
     if (leitor.status && String(leitor.status).toLowerCase() !== 'ativo') {
       return res.status(403).json({ erro: 'Leitor inativo' });
@@ -105,9 +115,10 @@ async function authLeitorHeader(req, res, next) {
     if (!leitor.api_key_hash) return res.status(401).json({ erro: 'Leitor sem chave definida' });
 
     const ok = await bcrypt.compare(key, leitor.api_key_hash);
+    console.log('[DEBUG][authLeitorHeader] bcrypt.compare =', ok);
     if (!ok) return res.status(401).json({ erro: 'Chave inválida' });
 
-    req.leitor = leitor; // { codigo, id_scanner, id_local, ... }
+    req.leitor = leitor;
     next();
   } catch (e) {
     console.error('authLeitorHeader erro:', e);
@@ -147,6 +158,7 @@ router.post('/leitores', async (req, res) => {
     );
 
     const created = r.affectedRows === 1 && r.insertId;
+    console.log('[DEBUG][/leitores] upsert', { codigo, id_scanner, status, created });
     res.json({ ok: true, mensagem: `Leitor ${created ? 'cadastrado' : 'atualizado'}`, data: { codigo, id_scanner, status } });
   } catch (err) {
     console.error('POST /leitores error:', err);
@@ -169,6 +181,7 @@ router.put('/leitores/:codigo/key', async (req, res) => {
         LIMIT 1`,
       [hash, codigo]
     );
+    console.log('[DEBUG][/leitores/:codigo/key] updated', { codigo, affected: r.affectedRows });
     if (!r.affectedRows) return res.status(404).json({ erro: 'Leitor não encontrado' });
     res.json({ ok: true, mensagem: 'Chave atualizada', data: { codigo } });
   } catch (e) {
@@ -180,7 +193,6 @@ router.put('/leitores/:codigo/key', async (req, res) => {
 // GET /api/ardloc/leitores  (para o select do front)
 router.get('/leitores', async (_req, res) => {
   try {
-    // 1) Tenta leitores ativos cadastrados
     const [rows] = await db.query(
       `SELECT codigo, COALESCE(NULLIF(nome,''), codigo) AS nome
          FROM rfid_leitor
@@ -188,10 +200,10 @@ router.get('/leitores', async (_req, res) => {
         ORDER BY nome, codigo`
     );
     if (rows.length) {
+      console.log('[DEBUG][/leitores] retornando rfid_leitor', rows.length);
       return res.json(rows.map(r => ({ codigo: String(r.codigo), nome: String(r.nome) })));
     }
 
-    // 2) Fallback: usa locais ativos como "leitores"
     const [locais] = await db.query(
       `SELECT id_scanner AS codigo, local_instalado AS nome
          FROM local
@@ -200,6 +212,7 @@ router.get('/leitores', async (_req, res) => {
           AND id_scanner <> ''
         ORDER BY local_instalado`
     );
+    console.log('[DEBUG][/leitores] fallback local (count)=', locais.length);
     return res.json(locais.map(r => ({ codigo: String(r.codigo), nome: String(r.nome) })));
   } catch (err) {
     console.error('GET /ardloc/leitores error:', err);
@@ -221,7 +234,6 @@ async function ensureLastUidTable() {
   );
 }
 
-// POST /api/ardloc/push-uid   (bridge → backend)
 router.post('/push-uid', authLeitorHeader, async (req, res) => {
   try {
     const { uid } = req.body || {};
@@ -229,6 +241,8 @@ router.post('/push-uid', authLeitorHeader, async (req, res) => {
 
     const leitorCodigo = req.leitor.codigo;
     await ensureLastUidTable();
+
+    console.log('[DEBUG][push-uid] salvar', { leitorCodigo, uid });
 
     await db.query(
       `INSERT INTO rfid_last_uid (leitor_codigo, uid, lido_em)
@@ -261,11 +275,16 @@ router.get('/last-uid', async (req, res) => {
         LIMIT 1`,
       [leitor]
     );
-    if (!rows.length) return res.json({ uid: null, lido_em: null, recente: false });
+    if (!rows.length) {
+      console.log('[DEBUG][last-uid] não encontrado para', leitor);
+      return res.json({ uid: null, lido_em: null, recente: false });
+    }
 
     const { uid, lido_em } = rows[0];
     const diffSec = (Date.now() - new Date(lido_em).getTime()) / 1000;
     const recente = diffSec <= maxAgeSec;
+
+    console.log('[DEBUG][last-uid] retorno', { leitor, uid, lido_em, diffSec: Math.round(diffSec), recente });
 
     res.json({ uid, lido_em, recente });
   } catch (e) {
@@ -299,7 +318,7 @@ async function ensureRastreamentoTable() {
   `);
 }
 
-// GET /api/ardloc/bind/list?id_os=123  -> lista todas as TAGs ativas da OS
+// GET /api/ardloc/bind/list?id_os=123
 router.get('/bind/list', async (req, res) => {
   const id_os = Number(req.query.id_os);
   if (!Number.isFinite(id_os)) return res.status(400).json({ erro: 'id_os inválido' });
@@ -315,7 +334,7 @@ router.get('/bind/list', async (req, res) => {
   res.json(rows);
 });
 
-// GET /api/ardloc/bind/current?id_os=123  -> última TAG vinculada (ativa)
+// GET /api/ardloc/bind/current?id_os=123
 router.get('/bind/current', async (req, res) => {
   const id_os = Number(req.query.id_os);
   if (!Number.isFinite(id_os)) return res.status(400).json({ erro: 'id_os inválido' });
@@ -332,7 +351,7 @@ router.get('/bind/current', async (req, res) => {
   res.json(rows[0] || { uid: '' });
 });
 
-// POST /api/ardloc/bind  { uid, id_os }  -> vincula TAG na OS (encerra binds antigos da mesma TAG)
+// POST /api/ardloc/bind  { uid, id_os }
 router.post('/bind', async (req, res) => {
   let uid = (req.body?.uid || '').toString().toUpperCase().replace(/[^0-9A-F]/g, '');
   const id_os = Number(req.body?.id_os);
@@ -360,6 +379,7 @@ router.post('/bind', async (req, res) => {
 
     await safeCommit(conn);
     await safeRelease(conn);
+    console.log('[DEBUG][/bind] vinculado', { uid, id_os });
     res.json({ ok: true, mensagem: 'TAG vinculada', uid, id_os });
   } catch (e) {
     await safeRollback(conn); await safeRelease(conn);
@@ -368,7 +388,7 @@ router.post('/bind', async (req, res) => {
   }
 });
 
-// POST /api/ardloc/unbind  { uid }  -> remove vínculo ativo da TAG
+// POST /api/ardloc/unbind  { uid }
 router.post('/unbind', async (req, res) => {
   let uid = (req.body?.uid || '').toString().toUpperCase().replace(/[^0-9A-F]/g, '');
   if (!uid || !/^[0-9A-F]{8,}$/.test(uid)) return res.status(400).json({ erro: 'uid inválido' });
@@ -380,15 +400,13 @@ router.post('/unbind', async (req, res) => {
       WHERE UPPER(uid) = ? AND desvinculado_em IS NULL AND tipo='bind'`,
     [uid]
   );
+  console.log('[DEBUG][/unbind] desvinculo', { uid, affected: r.affectedRows });
   if (!r.affectedRows) return res.status(404).json({ erro: 'Nenhum vínculo ativo para esta TAG' });
   res.json({ ok: true, mensagem: 'TAG desvinculada', uid });
 });
 
 /* =========================================================
    EVENT: leitor RFID → atualiza OS
-   Caminhos:
-   A) rastreamentorfid (bind TAG→OS)
-   B) rfid_tag (uid/uid_hex→id_equipamento) → OS ativa mais recente
    ========================================================= */
 router.post('/event', authLeitorHeader, async (req, res) => {
   const rawUid = (req.body?.uid || '').toString().trim();
@@ -397,12 +415,14 @@ router.post('/event', authLeitorHeader, async (req, res) => {
   const uid = rawUid.toUpperCase().replace(/[^0-9A-F]/g, '');
   const { id_local: leitorLocal, id_scanner: leitorScanner, codigo: leitorCodigo } = req.leitor;
 
+  console.log('[DEBUG][event] inicio', { uid, leitorCodigo, leitorScanner, leitorLocal });
+
   let conn;
   try {
     conn = await getConnFlexible(db);
     await safeBegin(conn);
 
-    // ➕ (last-uid) — garante que o front consiga ler o último UID mesmo em modo EVENT
+    // grava last-uid (para o front ler, mesmo em EVENT)
     await ensureLastUidTable();
     await db.query(
       `INSERT INTO rfid_last_uid (leitor_codigo, uid, lido_em)
@@ -410,17 +430,21 @@ router.post('/event', authLeitorHeader, async (req, res) => {
        ON DUPLICATE KEY UPDATE uid = VALUES(uid), lido_em = VALUES(lido_em)`,
       [leitorCodigo, uid]
     );
+    console.log('[DEBUG][event] last-uid gravado', { leitorCodigo, uid });
 
     // Tabelas potenciais e colunas
     const osTable = await pickTable(conn, ['ordenservico', 'ordemservico', 'ordensservico']);
+    console.log('[DEBUG][event] osTable =', osTable);
     if (!osTable) throw new Error('Tabela de ordens de serviço não encontrada.');
 
     const pkCol = await getPrimaryKey(conn, osTable);
+    console.log('[DEBUG][event] pkCol =', pkCol);
     if (!pkCol) throw new Error(`Não foi possível detectar a chave primária de ${osTable}.`);
 
     const hasIdLocal   = await columnExists(conn, osTable, 'id_local');
     const hasIdScanner = await columnExists(conn, osTable, 'id_scanner');
     const localCol = hasIdLocal ? 'id_local' : (hasIdScanner ? 'id_scanner' : null);
+    console.log('[DEBUG][event] localCol =', localCol, { hasIdLocal, hasIdScanner });
     if (!localCol) throw new Error(`Coluna de local não encontrada em ${osTable} (id_local ou id_scanner).`);
 
     if (!leitorScanner) {
@@ -432,15 +456,17 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       `SELECT local_instalado, status_interno FROM local WHERE id_scanner = ? LIMIT 1`,
       [leitorScanner]
     );
+    console.log('[DEBUG][event] local lido =', loc && loc[0]);
     if (!loc.length) throw new Error(`id_scanner '${leitorScanner}' não existe em local. Cadastre/ajuste o leitor.`);
     const local_instalado = loc[0].local_instalado;
     const status_interno  = loc[0].status_interno;
 
     const valorLocalNaOS = leitorScanner;
 
-    // --------- Caminho A: rastreamentorfid (bind TAG→OS) ---------
+    // Caminho A: rastreamentorfid (bind TAG→OS)
     let idOS = null;
     const hasRastreamento = await tableExists(conn, 'rastreamentorfid');
+    console.log('[DEBUG][event] hasRastreamento =', hasRastreamento);
     if (hasRastreamento) {
       const [vincRows] = await conn.query(
         `SELECT id_os
@@ -451,11 +477,13 @@ router.post('/event', authLeitorHeader, async (req, res) => {
         [uid]
       );
       if (vincRows.length) idOS = vincRows[0].id_os;
+      console.log('[DEBUG][event] idOS via rastreamentorfid =', idOS);
     }
 
-    // --------- Caminho B: rfid_tag → id_equipamento → OS ativa ---------
+    // Caminho B: rfid_tag → id_equipamento → OS ativa
     if (!idOS) {
       const hasRfidTag = await tableExists(conn, 'rfid_tag');
+      console.log('[DEBUG][event] hasRfidTag =', hasRfidTag);
       if (!hasRfidTag) {
         throw new Error('Tag não vinculada (tabela rastreamentorfid sem bind e tabela rfid_tag ausente).');
       }
@@ -466,6 +494,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           LIMIT 1`,
         [uid, uid]
       );
+      console.log('[DEBUG][event] tagRows =', tagRows && tagRows[0]);
       if (!tagRows.length) throw new Error('Tag não cadastrada em rfid_tag.');
       const id_equip = tagRows[0].id_equipamento;
 
@@ -477,11 +506,13 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           LIMIT 1`,
         [id_equip]
       );
+      console.log('[DEBUG][event] osRows =', osRows && osRows[0]);
       if (!osRows.length) throw new Error('Nenhuma OS ativa para esse equipamento.');
       idOS = osRows[0].id_os;
     }
+    console.log('[DEBUG][event] idOS final =', idOS);
 
-    // ---------- Mapeia status pelo local (se existir coluna) ----------
+    // Mapeia status pelo local
     let novoStatusId = null;
     const hasStatusOS = await columnExists(conn, osTable, 'id_status_os');
     if (hasStatusOS && status_interno) {
@@ -491,6 +522,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
       );
       if (st?.id_status) novoStatusId = Number(st.id_status);
     }
+    console.log('[DEBUG][event] status mapeado =', { hasStatusOS, status_interno, novoStatusId });
 
     // carrega dados anteriores (para auditoria)
     const [[prevRow]] = await conn.query(
@@ -502,8 +534,9 @@ router.post('/event', authLeitorHeader, async (req, res) => {
     );
     const prevLocal  = prevRow?.prev_local ?? null;
     const prevStatus = prevRow?.prev_status ?? null;
+    console.log('[DEBUG][event] prev', { prevLocal, prevStatus });
 
-    // ---------- Atualiza OS ----------
+    // Atualiza OS
     const hasAtualizadoEm    = await columnExists(conn, osTable, 'atualizado_em');
     const hasDataAtualizacao = await columnExists(conn, osTable, 'data_atualizacao');
 
@@ -522,18 +555,20 @@ router.post('/event', authLeitorHeader, async (req, res) => {
     sql += ` WHERE ${pkCol} = ? LIMIT 1`;
     params.push(idOS);
 
+    console.log('[DEBUG][event] UPDATE OS', { sql, params });
     await conn.query(sql, params);
 
-    // ---------- Log de rastreamento (se existir) ----------
+    // Log de rastreamento (se existir)
     if (hasRastreamento) {
       await conn.query(
         `INSERT INTO rastreamentorfid (uid, id_os, id_local, tipo, evento_em)
          VALUES (UPPER(?), ?, ?, 'move', NOW())`,
         [uid, idOS, leitorLocal || null]
       );
+      console.log('[DEBUG][event] rastreamento move inserido');
     }
 
-    // ---------- Auditoria (opcional) ----------
+    // Auditoria (opcional)
     try {
       if (String(prevLocal) !== String(valorLocalNaOS)) {
         await logAudit(conn, {
@@ -546,6 +581,7 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           note: `RFID ${uid} → ${local_instalado} (${leitorScanner})`,
           userId: null
         });
+        console.log('[DEBUG][event] audit local ok');
       }
       if (hasStatusOS && novoStatusId !== null && Number(prevStatus) !== Number(novoStatusId)) {
         const [[oldS]] = await conn.query('SELECT descricao FROM status_os WHERE id_status = ?', [prevStatus]);
@@ -560,11 +596,16 @@ router.post('/event', authLeitorHeader, async (req, res) => {
           note: `${oldS?.descricao || prevStatus} → ${newS?.descricao || novoStatusId} (RFID)`,
           userId: null
         });
+        console.log('[DEBUG][event] audit status ok');
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[DEBUG][event] audit opcional falhou (ignorado):', e?.message);
+    }
 
     await safeCommit(conn);
     await safeRelease(conn);
+
+    console.log('[DEBUG][event] sucesso', { idOS, valorLocalNaOS, novoStatusId });
 
     return res.json({
       ok: true,
