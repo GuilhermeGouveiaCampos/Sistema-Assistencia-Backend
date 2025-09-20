@@ -274,6 +274,118 @@ router.get('/last-uid', async (req, res) => {
   }
 });
 
+
+/* =========================================================
+   BIND/UNBIND de TAG ↔ OS  (sem usar routes/rfid.js)
+   Tabela usada: rastreamentorfid  (cria se não existir)
+   ========================================================= */
+async function ensureRastreamentoTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS rastreamentorfid (
+      id_log INT AUTO_INCREMENT PRIMARY KEY,
+      uid VARCHAR(64) NOT NULL,
+      id_os INT NOT NULL,
+      id_local INT NULL,
+      tipo ENUM('bind','move') NOT NULL DEFAULT 'bind',
+      evento_em DATETIME NULL,
+      vinculado_em DATETIME NULL,
+      desvinculado_em DATETIME NULL,
+      KEY idx_uid (uid),
+      KEY idx_os (id_os),
+      KEY idx_tipo (tipo),
+      KEY idx_vinc (vinculado_em),
+      KEY idx_desv (desvinculado_em)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
+
+// GET /api/ardloc/bind/list?id_os=123  -> lista todas as TAGs ativas da OS
+router.get('/bind/list', async (req, res) => {
+  const id_os = Number(req.query.id_os);
+  if (!Number.isFinite(id_os)) return res.status(400).json({ erro: 'id_os inválido' });
+
+  await ensureRastreamentoTable();
+  const [rows] = await db.query(
+    `SELECT UPPER(uid) AS uid, COALESCE(vinculado_em, evento_em) AS desde
+       FROM rastreamentorfid
+      WHERE id_os = ? AND tipo='bind' AND desvinculado_em IS NULL
+      ORDER BY COALESCE(vinculado_em, evento_em) DESC`,
+    [id_os]
+  );
+  res.json(rows);
+});
+
+// GET /api/ardloc/bind/current?id_os=123  -> última TAG vinculada (ativa)
+router.get('/bind/current', async (req, res) => {
+  const id_os = Number(req.query.id_os);
+  if (!Number.isFinite(id_os)) return res.status(400).json({ erro: 'id_os inválido' });
+
+  await ensureRastreamentoTable();
+  const [rows] = await db.query(
+    `SELECT UPPER(uid) AS uid
+       FROM rastreamentorfid
+      WHERE id_os = ? AND tipo='bind' AND desvinculado_em IS NULL
+      ORDER BY COALESCE(vinculado_em, evento_em) DESC
+      LIMIT 1`,
+    [id_os]
+  );
+  res.json(rows[0] || { uid: '' });
+});
+
+// POST /api/ardloc/bind  { uid, id_os }  -> vincula TAG na OS (encerra binds antigos da mesma TAG)
+router.post('/bind', async (req, res) => {
+  let uid = (req.body?.uid || '').toString().toUpperCase().replace(/[^0-9A-F]/g, '');
+  const id_os = Number(req.body?.id_os);
+  if (!uid || !/^[0-9A-F]{8,}$/.test(uid)) return res.status(400).json({ erro: 'uid inválido' });
+  if (!Number.isFinite(id_os)) return res.status(400).json({ erro: 'id_os inválido' });
+
+  await ensureRastreamentoTable();
+  let conn;
+  try {
+    conn = await getConnFlexible(db);
+    await safeBegin(conn);
+
+    await conn.query(
+      `UPDATE rastreamentorfid
+          SET desvinculado_em = NOW()
+        WHERE UPPER(uid) = ? AND desvinculado_em IS NULL AND tipo='bind'`,
+      [uid]
+    );
+
+    await conn.query(
+      `INSERT INTO rastreamentorfid (uid, id_os, tipo, vinculado_em)
+       VALUES (UPPER(?), ?, 'bind', NOW())`,
+      [uid, id_os]
+    );
+
+    await safeCommit(conn);
+    await safeRelease(conn);
+    res.json({ ok: true, mensagem: 'TAG vinculada', uid, id_os });
+  } catch (e) {
+    await safeRollback(conn); await safeRelease(conn);
+    console.error('bind error:', e);
+    res.status(500).json({ erro: 'Falha ao vincular TAG' });
+  }
+});
+
+// POST /api/ardloc/unbind  { uid }  -> remove vínculo ativo da TAG
+router.post('/unbind', async (req, res) => {
+  let uid = (req.body?.uid || '').toString().toUpperCase().replace(/[^0-9A-F]/g, '');
+  if (!uid || !/^[0-9A-F]{8,}$/.test(uid)) return res.status(400).json({ erro: 'uid inválido' });
+
+  await ensureRastreamentoTable();
+  const [r] = await db.query(
+    `UPDATE rastreamentorfid
+        SET desvinculado_em = NOW()
+      WHERE UPPER(uid) = ? AND desvinculado_em IS NULL AND tipo='bind'`,
+    [uid]
+  );
+  if (!r.affectedRows) return res.status(404).json({ erro: 'Nenhum vínculo ativo para esta TAG' });
+  res.json({ ok: true, mensagem: 'TAG desvinculada', uid });
+});
+
+
+
 /* =========================================================
    EVENT: leitor RFID → atualiza OS
    Caminhos:
