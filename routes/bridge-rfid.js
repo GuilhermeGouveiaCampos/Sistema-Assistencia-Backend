@@ -8,7 +8,7 @@ const axios = require('axios');
  * AMBIENTE (pode ajustar via variáveis de ambiente)
  *  SERIAL_PORT  -> "COM5" (Windows) | "/dev/ttyUSB0" ou "/dev/ttyACM0" (Linux)
  *  BAUD_RATE    -> 9600 (use igual ao seu sketch do Arduino)
- *  API_BASE     -> "http://localhost:3001" | URL do Railway
+ *  API_BASE     -> "http://localhost:3001" | URL do Railway (sem / no final)
  *  LEITOR_ID    -> ex: "PC-MESA01_COM5" (igual cadastrado em /api/ardloc/leitores)
  *  LEITOR_KEY   -> opcional; se cadastrada, vai no header de autenticação
  *  BRIDGE_MODE  -> "EVENT" (atualiza OS no banco) | "PUSH" (só preenche last-uid p/ front)
@@ -104,12 +104,15 @@ async function enviarUid(uid) {
     if (BRIDGE_MODE === 'EVENT') {
       // 🔁 Atualiza OS no banco (mapeia leitor -> local/status no backend)
       const url = `${API_BASE}/api/ardloc/event`;
-      const body = { uid, leitor_id: LEITOR_ID };
+      // No modo EVENT, a autenticação do leitor é via headers:
+      //   x-leitor-codigo (obrigatório) + x-leitor-key (se cadastrada)
+      const body = { uid }; // não precisa enviar leitor_id no corpo
       const res = await axios.post(url, body, {
         timeout: 8000,
         headers: {
           'Content-Type': 'application/json',
-          'x-leitor-key': LEITOR_KEY, // se cadastrada no leitor
+          'x-leitor-codigo': LEITOR_ID, // ✅ AGORA VAI NO HEADER
+          'x-leitor-key': LEITOR_KEY,   // ✅ chave (se cadastrada no leitor)
         },
       });
       console.log('[API EVENT]', res.status, JSON.stringify(res.data));

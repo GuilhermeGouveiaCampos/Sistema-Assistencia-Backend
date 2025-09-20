@@ -384,8 +384,6 @@ router.post('/unbind', async (req, res) => {
   res.json({ ok: true, mensagem: 'TAG desvinculada', uid });
 });
 
-
-
 /* =========================================================
    EVENT: leitor RFID → atualiza OS
    Caminhos:
@@ -403,6 +401,15 @@ router.post('/event', authLeitorHeader, async (req, res) => {
   try {
     conn = await getConnFlexible(db);
     await safeBegin(conn);
+
+    // ➕ (last-uid) — garante que o front consiga ler o último UID mesmo em modo EVENT
+    await ensureLastUidTable();
+    await db.query(
+      `INSERT INTO rfid_last_uid (leitor_codigo, uid, lido_em)
+       VALUES (?, UPPER(?), NOW())
+       ON DUPLICATE KEY UPDATE uid = VALUES(uid), lido_em = VALUES(lido_em)`,
+      [leitorCodigo, uid]
+    );
 
     // Tabelas potenciais e colunas
     const osTable = await pickTable(conn, ['ordenservico', 'ordemservico', 'ordensservico']);
