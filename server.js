@@ -39,6 +39,9 @@ app.use(
 // Confiar em proxy (Railway/Render/Heroku/NGINX)
 app.set("trust proxy", 1);
 
+// Inicia o bot do WhatsApp
+require("./utils/whats-bot");
+
 /* ===========================
    CORS robusto (antes de rotas e limiters!)
    =========================== */
