@@ -10,6 +10,7 @@ const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 const mysql = require("mysql2"); // callback API (compatível com suas rotas)
+const fs = require("fs");        // <-- adicionado p/ garantir pastas
 
 const app = express();
 
@@ -107,11 +108,26 @@ const uploadsRoot = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(__dirname, "uploads", "os");
 
+// garante que as pastas existam (útil no Railway/volume limpo)
+try {
+  fs.mkdirSync(uploadsRoot, { recursive: true });
+  fs.mkdirSync(path.join(__dirname, "uploads"), { recursive: true });
+} catch (e) {
+  console.warn("Não foi possível criar pastas de upload:", e?.message || e);
+}
+
 // URLs salvas no banco ficarão assim: /uploads/os/<arquivo>
 app.use("/uploads/os", express.static(uploadsRoot, { maxAge: "7d" }));
 
 // (opcional) compat com outras pastas em /uploads que você já use
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// atalho p/ visualizar o QR gerado pelo whats-bot (uploads/whatsapp-qr.png)
+app.get("/whatsapp-qr", (req, res) => {
+  const fp = path.join(__dirname, "uploads", "whatsapp-qr.png");
+  if (fs.existsSync(fp)) return res.sendFile(fp);
+  return res.status(404).json({ erro: "QR ainda não foi gerado." });
+});
 
 /* ===========================
    MySQL (envs no Railway)
@@ -192,4 +208,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor ouvindo em 0.0.0.0:${PORT}`);
+  console.log("QR do WhatsApp (se gerado): /whatsapp-qr  ou  /uploads/whatsapp-qr.png");
 });
