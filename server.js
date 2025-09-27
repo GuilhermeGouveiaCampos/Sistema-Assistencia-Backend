@@ -39,7 +39,7 @@ app.use(
 // Confiar em proxy (Railway/Render/Heroku/NGINX)
 app.set("trust proxy", 1);
 
-// Inicia o bot do WhatsApp
+// Inicia o bot do WhatsApp   
 require("./utils/whats-bot");
 
 /* ===========================
@@ -126,10 +126,32 @@ app.use("/uploads/os", express.static(uploadsRoot, { maxAge: "7d" }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // atalho p/ visualizar o QR gerado pelo whats-bot (uploads/whatsapp-qr.png)
+// atalho p/ visualizar o QR gerado pelo whats-bot (uploads/whatsapp-qr.png)
 app.get("/whatsapp-qr", (req, res) => {
   const fp = path.join(__dirname, "uploads", "whatsapp-qr.png");
   if (fs.existsSync(fp)) return res.sendFile(fp);
   return res.status(404).json({ erro: "QR ainda não foi gerado." });
+});
+
+// nova rota com auto-refresh (não substitui a de cima)
+app.get('/whatsapp-qr-live', (_req, res) => {
+  const v = Date.now(); // cache-buster
+  res.type('html').send(`
+    <!doctype html><meta charset="utf-8" />
+    <title>WhatsApp QR</title>
+    <style>
+      body{display:grid;place-items:center;height:100vh;font-family:sans-serif}
+      img{max-width:90vmin}
+    </style>
+    <h1>Escaneie o QR do WhatsApp</h1>
+    <img src="/uploads/whatsapp-qr.png?v=${v}" onerror="this.src='/uploads/whatsapp-qr.png?v='+Date.now()" />
+    <script>
+      setInterval(()=>{
+        const img=document.querySelector('img');
+        img.src='/uploads/whatsapp-qr.png?v='+Date.now();
+      }, 15000);
+    </script>
+  `);
 });
 
 /* ===========================

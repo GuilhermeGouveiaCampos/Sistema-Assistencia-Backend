@@ -68,28 +68,29 @@ const client = new Client({
   webVersionCache: { type: 'none' },
 });
 
+// utils/whats-bot.js  (substitua apenas o client.on('qr', ...) atual)
 const QR_PNG_PATH = path.join(__dirname, '..', 'uploads', 'whatsapp-qr.png');
 
 client.on('qr', async (qr) => {
-  // Terminal (útil localmente)
   console.clear();
-  console.log('Escaneie o QR:');
+  console.log('Escaneie o QR (gerado agora):');
   qrcodeTerminal.generate(qr, { small: true });
 
-  // Salva PNG em uploads para abrir no navegador (Railway)
   try {
-    // garante que a pasta exista
     const dir = path.dirname(QR_PNG_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+    // sobrescreve o PNG sempre que vier um novo QR
     await qrcodeImage.toFile(QR_PNG_PATH, qr, { width: 320, margin: 2 });
-    console.log(`📷 QR salvo em: ${QR_PNG_PATH}`);
-    console.log('Se a pasta "uploads" estiver exposta como estático pelo seu server, abra no navegador:');
-    console.log('   /uploads/whatsapp-qr.png');
+    // grava também um “timestamp” para você saber se é novo
+    fs.writeFileSync(path.join(dir, 'whatsapp-qr.txt'), new Date().toISOString());
+
+    console.log('📷 QR salvo em: /uploads/whatsapp-qr.png (autoatualiza a cada emissão)');
   } catch (e) {
     console.error('Falha ao salvar QR como PNG:', e?.message || e);
   }
 });
+
 
 client.on('auth_failure', (m)=>console.error('auth_failure',m));
 client.on('disconnected', (r)=>{ console.warn('disconnected',r); client.initialize(); });
