@@ -387,19 +387,47 @@ router.put('/:id', async (req, res) => {
     if (!prevRows.length) return res.status(404).json({ erro: 'Ordem não encontrada' });
     const prev = prevRows[0];
 
-    if (!idStatusNum || Number.isNaN(idStatusNum)) {
-      const [[loc]] = await db.query(
-        `SELECT status_interno, local_instalado
+    /* 🔧 AJUSTE: validar local ATIVO e mapear status corretamente
+       - Se status_interno não existir em status_os, usa fallback por id_local (inclui LOC008 → 6)
+    */
+    const [[locRow]] = await db.query(
+      `SELECT TRIM(id_scanner) AS id_scanner,
+              TRIM(local_instalado) AS local_instalado,
+              TRIM(status_interno)  AS status_interno,
+              TRIM(status)          AS status
          FROM local
-         WHERE id_scanner = ?`,
-        [idLocalStr]
-      );
-      if (loc?.status_interno) {
+        WHERE TRIM(id_scanner) = TRIM(?)
+        LIMIT 1`,
+      [idLocalStr]
+    );
+    if (!locRow || locRow.status !== 'ativo') {
+      return res.status(400).json({ erro: 'Status inválido. Selecione um local válido.' });
+    }
+
+    const MAP_LOCAL_TO_STATUS = {
+      LOC_DIAG: 2, // Diagnóstico
+      LOC001: 1,   // Recebido
+      LOC002: 2,   // Em Diagnóstico
+      LOC003: 3,   // Aguardando Aprovação
+      LOC004: 4,   // Aguardando Peça
+      LOC005: 5,   // Em Reparo
+      LOC006: 6,   // Finalizado
+      LOC007: 7,   // Aguardando Retirada
+      LOC008: 6    // Com Cliente → Finalizado (Entregue)
+    };
+
+    if (!idStatusNum || Number.isNaN(idStatusNum)) {
+      // tenta pelo status_interno (ex.: "Em Diagnóstico"). Se não achar, cai no fallback.
+      if (locRow.status_interno) {
         const [[st]] = await db.query(
           `SELECT id_status FROM status_os WHERE descricao = ? LIMIT 1`,
-          [loc.status_interno]
+          [locRow.status_interno]
         );
         if (st?.id_status) idStatusNum = Number(st.id_status);
+      }
+      if (!idStatusNum || Number.isNaN(idStatusNum)) {
+        const fallback = MAP_LOCAL_TO_STATUS[idLocalStr];
+        if (fallback) idStatusNum = fallback;
       }
     }
 
