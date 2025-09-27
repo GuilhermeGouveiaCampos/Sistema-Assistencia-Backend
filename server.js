@@ -35,6 +35,9 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   morgan(":method :url :status :res[content-length] - :response-time ms")
 );
+app.use('/api/dashboard', require('./routes/dashboard'));
+
+
 
 // Confiar em proxy (Railway/Render/Heroku/NGINX)
 app.set("trust proxy", 1);
