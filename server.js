@@ -184,6 +184,7 @@ app.use("/api/status", require("./routes/status"));
 app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/rfid", require("./routes/leitores"));
 app.use("/api/ardloc", require("./routes/ardloc"));
+app.use("/api/relatorios", require("./routes/relatorios"));
 
 /* ===========================
    WhatsApp bot
