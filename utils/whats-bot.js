@@ -9,11 +9,10 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 
 /* ========= SCHEMA / TABELAS ========= */
 const SCHEMA = 'assistencia_tecnica';
-const OS_TABLE = `${SCHEMA}.ordenservico`;        // ✅ com 1 "s"
+const OS_TABLE = `${SCHEMA}.ordenservico`;
 const CLIENTE_TABLE = `${SCHEMA}.cliente`;
 
 /* ========= COLUNAS ========= */
-// ordenservico
 const OS_PK = 'id_os';
 const OS_ID_CLIENTE = 'id_cliente';
 const OS_ID_LOCAL = 'id_local';
@@ -22,9 +21,7 @@ const OS_DATA_CR = 'data_criacao';
 const OS_DATA_AT = 'data_atualizacao';
 const OS_ID_TEC = 'id_tecnico';
 
-// cliente (suporta id_cliente OU id_diente)
 const CLIENTE_ID1 = 'id_cliente';
-const CLIENTE_ID2 = 'id_diente';
 const CLIENTE_FONE = 'telefone';
 
 /* ========= ENV ========= */
@@ -35,35 +32,36 @@ const {
   WPP_DATA_PATH = './.wwebjs_auth',
 } = process.env;
 
-/* ========= Mensagens por local =========
-   Mapeadas pelo valor de id_local da tabela `local` (ex.: LOC001, LOC002, etc.)
-*/
+/* ========= Mensagens por LOCAL ========= */
 const MESSAGES_BY_LOCAL = new Map([
   ['LOC001', '✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento.'],
-  ['LOC002', '🔧 Seu equipamento já está na mesa do técnico para diagnóstico. Em breve enviaremos o orçamento.'],
+  ['LOC002', '🔧 Seu equipamento já está na mesa do técnico para diagnóstico.'],
   ['LOC003', '📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo.'],
-  ['LOC004', '📦 Estamos aguardando a chegada das peças para continuar o reparo.'],
+  ['LOC004', '📦 Estamos aguardando a chegada das peças.'],
   ['LOC005', '🛠️ Seu equipamento está em *reparo* neste momento.'],
   ['LOC006', '🧪 Estamos *testando* seu equipamento para garantir que ficou 100%.'],
   ['LOC007', '📦 Seu equipamento está *pronto para retirada*.'],
   ['LOC008', '✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!'],
 ]);
 
-/* ========= Cópias por id_local via .env (opcional) =========
-   Ex.: ROUTE_LOCO001_NUMBERS=5564999999999,5562988887777
-*/
+/* ========= Mensagens extras por STATUS ========= */
+const MESSAGES_BY_STATUS = new Map([
+  ['Com Cliente', '📦 Seu equipamento foi entregue/retirado. Obrigado por escolher a Eletrotek!'],
+]);
+
+/* ========= Rotas extras via .env ========= */
 const envList = (k) => (process.env[k] || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const EXTRA_ROUTES = new Map([
-  ['LOCO001', envList('ROUTE_LOCO001_NUMBERS')],
-  ['LOCO002', envList('ROUTE_LOCO002_NUMBERS')],
-  ['LOCO003', envList('ROUTE_LOCO003_NUMBERS')],
-  ['LOCO004', envList('ROUTE_LOCO004_NUMBERS')],
-  ['LOCO005', envList('ROUTE_LOCO005_NUMBERS')],
-  ['LOCO006', envList('ROUTE_LOCO006_NUMBERS')],
-  ['LOCO007', envList('ROUTE_LOCO007_NUMBERS')],
-  ['LOCO008', envList('ROUTE_LOCO008_NUMBERS')],
+  ['LOC001', envList('ROUTE_LOC001_NUMBERS')],
+  ['LOC002', envList('ROUTE_LOC002_NUMBERS')],
+  ['LOC003', envList('ROUTE_LOC003_NUMBERS')],
+  ['LOC004', envList('ROUTE_LOC004_NUMBERS')],
+  ['LOC005', envList('ROUTE_LOC005_NUMBERS')],
+  ['LOC006', envList('ROUTE_LOC006_NUMBERS')],
+  ['LOC007', envList('ROUTE_LOC007_NUMBERS')],
+  ['LOC008', envList('ROUTE_LOC008_NUMBERS')],
 ]);
 
 /* ========= MYSQL ========= */
@@ -89,18 +87,12 @@ async function getPool() {
 const client = new Client({
   authStrategy: new LocalAuth({
     clientId: WPP_SESSION_NAME,
-    dataPath: WPP_DATA_PATH, // persiste sessão no Volume
+    dataPath: WPP_DATA_PATH,
   }),
   puppeteer: {
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   },
-  // fixa versão (reduz MUITO "não é possível conectar dispositivo")
   webVersion: '2.2412.54',
   webVersionCache: {
     type: 'remote',
@@ -116,23 +108,16 @@ const QR_PNG_PATH = path.join(__dirname, '..', 'uploads', 'whatsapp-qr.png');
 
 client.on('qr', async (qr) => {
   console.clear();
-  console.log('Escaneie o QR (também disponí­vel em /whatsapp-qr ou /uploads/whatsapp-qr.png):');
+  console.log('📲 Escaneie o QR abaixo para conectar ao WhatsApp:');
   qrcodeTerminal.generate(qr, { small: true });
-
   try {
     const dir = path.dirname(QR_PNG_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     await qrcodeImage.toFile(QR_PNG_PATH, qr, { width: 320, margin: 2 });
-    console.log(`📷 QR salvo em: ${QR_PNG_PATH}`);
+    console.log(`QR salvo em: ${QR_PNG_PATH}`);
   } catch (e) {
-    console.error('Falha ao salvar QR como PNG:', e?.message || e);
+    console.error('Falha ao salvar QR:', e?.message || e);
   }
-});
-
-client.on('auth_failure', (m) => console.error('[whats] auth_failure', m));
-client.on('disconnected', (r) => {
-  console.warn('[whats] disconnected', r);
-  client.initialize();
 });
 
 client.on('ready', async () => {
@@ -141,13 +126,19 @@ client.on('ready', async () => {
   loop();
 });
 
+client.on('auth_failure', (m) => console.error('[whats] auth_failure', m));
+client.on('disconnected', (r) => {
+  console.warn('[whats] disconnected', r);
+  client.initialize();
+});
+
 client.initialize();
 
-/* ========= STATE (evitar duplicidade) ========= */
+/* ========= STATE ========= */
 const STATE_FILE = path.join(__dirname, '..', '.bot_state.json');
 const loadState = () => {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
-  catch { return { lastSeen: {}, bootstrapped: false }; }
+  catch { return { lastSeen: {}, lastStatus: {}, bootstrapped: false }; }
 };
 const saveState = (s) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 let state = loadState();
@@ -155,15 +146,13 @@ let state = loadState();
 /* ========= HELPERS ========= */
 const fmt = (d) => d ? new Date(d).toLocaleString('pt-BR') : '-';
 
-// normaliza número BR
 function normalizeBR(phoneRaw) {
   if (!phoneRaw) return null;
-  let d = String(phoneRaw).replace(/\D/g, ''); // só dígitos
+  let d = String(phoneRaw).replace(/\D/g, ''); // só números
   d = d.replace(/^0+/, '');
   if (d.startsWith('55')) {
-    if (d.length === 12 || d.length === 13) return d; // 55 + 10/11
-    if (d.length > 13) return d.slice(0, 13);
-    return null;
+    if (d.length >= 12 && d.length <= 13) return d;
+    return d.slice(0, 13);
   }
   if (d.length === 10 || d.length === 11) return '55' + d;
   return null;
@@ -209,20 +198,12 @@ async function sendTo(numbers, text, osId, idLocal) {
 /* ========= BOOTSTRAP ========= */
 async function bootstrap() {
   const p = await getPool();
-
-  // índice útil para busca recente
-  try {
-    await p.query(`CREATE INDEX IF NOT EXISTS idx_os_at ON ${OS_TABLE} (${OS_DATA_AT}, ${OS_PK})`);
-  } catch (_) {}
-
   if (state.bootstrapped) return;
-
-  // baseline: marca todas as OS existentes sem disparar mensagens
-  const [rows] = await p.query(`
-    SELECT ${OS_PK} AS id_os, ${OS_ID_LOCAL} AS id_local
-    FROM ${OS_TABLE}
-  `);
-  for (const r of rows) state.lastSeen[r.id_os] = r.id_local;
+  const [rows] = await p.query(`SELECT ${OS_PK} AS id_os, ${OS_ID_LOCAL} AS id_local, id_status_os FROM ${OS_TABLE}`);
+  for (const r of rows) {
+    state.lastSeen[r.id_os] = r.id_local;
+    state.lastStatus[r.id_os] = r.id_status_os ?? null;
+  }
   state.bootstrapped = true;
   saveState(state);
   console.log(`📌 Baseline: ${rows.length} OS (sem notificar).`);
@@ -232,83 +213,84 @@ async function bootstrap() {
 function messageForLocal(idLocal, os) {
   return (
     MESSAGES_BY_LOCAL.get(idLocal) ||
-    `🛠️ Sua Ordem de Serviço #${os.id_os} foi movida para *${idLocal}*.\n` +
+    `🛠️ Sua OS #${os.id_os} foi movida para *${idLocal}*.\n` +
     `Problema: ${os.descricao_problema || '-'}\n` +
     `Criada: ${fmt(os.data_criacao)} | Atualizada: ${fmt(os.data_atualizacao)}`
   );
 }
 
-const WELCOME_MSG =
-  '✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. ' +
-  'Em breve você receberá seu orçamento.';
-
 async function checkOnce() {
   const p = await getPool();
-
-  // Busca OS recentes (últimos 2 dias) — ajuste se quiser
   const [rows] = await p.query(`
     SELECT
-      os.${OS_PK}          AS id_os,
-      os.${OS_ID_CLIENTE}  AS id_cliente,
-      os.${OS_DESC_PROB}   AS descricao_problema,
-      os.${OS_DATA_CR}     AS data_criacao,
-      os.${OS_DATA_AT}     AS data_atualizacao,
-      os.${OS_ID_TEC}      AS id_tecnico,
-      os.${OS_ID_LOCAL}    AS id_local,
-      c.${CLIENTE_FONE}    AS telefone_cliente
+      os.${OS_PK} AS id_os,
+      os.${OS_ID_CLIENTE} AS id_cliente,
+      os.${OS_DESC_PROB} AS descricao_problema,
+      os.${OS_DATA_CR} AS data_criacao,
+      os.${OS_DATA_AT} AS data_atualizacao,
+      os.${OS_ID_TEC} AS id_tecnico,
+      os.${OS_ID_LOCAL} AS id_local,
+      os.id_status_os AS id_status_os,
+      s.descricao AS status_desc,
+      COALESCE(c.${CLIENTE_FONE}, c.${CLIENTE_FONE}) AS telefone_cliente
     FROM ${OS_TABLE} os
-    LEFT JOIN ${CLIENTE_TABLE} c
-      ON (c.${CLIENTE_ID1} = os.${OS_ID_CLIENTE} OR c.${CLIENTE_ID2} = os.${OS_ID_CLIENTE})
+    LEFT JOIN ${CLIENTE_TABLE} c ON c.${CLIENTE_ID1} = os.${OS_ID_CLIENTE}
+    LEFT JOIN ${SCHEMA}.status_os s ON s.id_status = os.id_status_os
     WHERE os.${OS_DATA_AT} >= NOW() - INTERVAL 2 DAY
     ORDER BY os.${OS_DATA_AT} DESC, os.${OS_PK} DESC
   `);
 
-  let changes = 0;
-
   for (const os of rows) {
-    const prev = state.lastSeen[os.id_os];
+    const prevLocal = state.lastSeen[os.id_os];
+    const prevStatus = state.lastStatus[os.id_os];
 
-    // NÚMERO(S) DESTINO
     const to = [];
     const telCliente = normalizeBR(os.telefone_cliente);
     if (telCliente) to.push(telCliente);
-
     const extras = EXTRA_ROUTES.get(os.id_local) || [];
     for (const raw of extras) {
       const e = normalizeBR(raw);
       if (e) to.push(e);
     }
 
-    // Se não há destino válido, apenas atualiza o estado e segue
-    if (to.length === 0) {
+    if (!to.length) {
       state.lastSeen[os.id_os] = os.id_local;
+      state.lastStatus[os.id_os] = os.id_status_os;
       continue;
     }
 
-    // Envio na *criação* (primeira vez que a OS aparece após o bot estar no ar)
-    if (prev === undefined) {
+    // Nova OS → mensagem de boas-vindas
+    if (prevLocal === undefined) {
       state.lastSeen[os.id_os] = os.id_local;
+      state.lastStatus[os.id_os] = os.id_status_os;
       saveState(state);
-      await sendTo(to, WELCOME_MSG, os.id_os, os.id_local);
+      await sendTo(to, MESSAGES_BY_LOCAL.get('LOC001'), os.id_os, os.id_local);
       continue;
     }
 
-    // Mudança de local
-    if (prev !== os.id_local) {
-      changes++;
+    // Mudança de LOCAL
+    if (prevLocal !== os.id_local) {
       state.lastSeen[os.id_os] = os.id_local;
+      state.lastStatus[os.id_os] = os.id_status_os;
       saveState(state);
-
       const texto = messageForLocal(os.id_local, os);
       await sendTo(to, texto, os.id_os, os.id_local);
+      continue;
+    }
+
+    // Mudança de STATUS
+    if (prevStatus !== os.id_status_os) {
+      state.lastStatus[os.id_os] = os.id_status_os;
+      saveState(state);
+      if (os.status_desc && MESSAGES_BY_STATUS.has(os.status_desc)) {
+        const texto = MESSAGES_BY_STATUS.get(os.status_desc);
+        await sendTo(to, texto, os.id_os, os.id_local);
+      }
     }
   }
-
-  if (changes) console.log(`✔️ ${changes} mudança(s) processadas`);
 }
 
 function loop() {
   checkOnce().catch(e => console.error('[whats] Loop error:', e));
-  setInterval(() => checkOnce().catch(e => console.error('[whats] Loop error:', e)),
-              Number(POLL_INTERVAL_MS));
+  setInterval(() => checkOnce().catch(e => console.error('[whats] Loop error:', e)), Number(POLL_INTERVAL_MS));
 }
