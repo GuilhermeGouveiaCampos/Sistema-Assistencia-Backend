@@ -104,7 +104,15 @@ const client = new Client({
   qrMaxRetries: 0,
 });
 
-const QR_PNG_PATH = path.join(__dirname, '..', 'uploads', 'whatsapp-qr.png');
+// Base de uploads: mesma lógica do server (se houver UPLOAD_DIR, usa o pai)
+const uploadsRoot = process.env.UPLOAD_DIR
+  ? require('path').resolve(process.env.UPLOAD_DIR)
+  : require('path').join(__dirname, '..', 'uploads', 'os');
+const uploadsBase = require('path').dirname(uploadsRoot);
+
+// Salva o QR aqui (será /data/uploads/whatsapp-qr.png quando UPLOAD_DIR=/data/uploads/os)
+const QR_PNG_PATH = require('path').join(uploadsBase, 'whatsapp-qr.png');
+
 
 client.on('qr', async (qr) => {
   console.clear();

@@ -89,19 +89,24 @@ app.options("*", cors());
    Uploads / arquivos estáticos
    =========================== */
 const uploadsRoot = process.env.UPLOAD_DIR
-  ? path.resolve(process.env.UPLOAD_DIR)
+  ? path.resolve(process.env.UPLOAD_DIR)                  // ex: /data/uploads/os
   : path.join(__dirname, "uploads", "os");
+const uploadsBase = path.dirname(uploadsRoot);            // ex: /data/uploads  (ou /app/uploads)
+
 try {
   fs.mkdirSync(uploadsRoot, { recursive: true });
-  fs.mkdirSync(path.join(__dirname, "uploads"), { recursive: true });
+  fs.mkdirSync(uploadsBase, { recursive: true });
 } catch (e) {
   console.warn("Não foi possível criar pastas de upload:", e?.message || e);
 }
+
+// /uploads/os -> pasta de OS
 app.use("/uploads/os", express.static(uploadsRoot, { maxAge: "7d" }));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// /uploads -> base (onde ficará o whatsapp-qr.png)
+app.use("/uploads", express.static(uploadsBase, { maxAge: "7d" }));
 
 app.get("/whatsapp-qr", (_req, res) => {
-  const fp = path.join(__dirname, "uploads", "whatsapp-qr.png");
+  const fp = path.join(uploadsBase, "whatsapp-qr.png");  // <— ajustado
   if (fs.existsSync(fp)) return res.sendFile(fp);
   return res.status(404).json({ erro: "QR ainda não foi gerado." });
 });
@@ -117,6 +122,7 @@ app.get("/whatsapp-qr-live", (_req, res) => {
     <script>setInterval(()=>{const img=document.querySelector('img');img.src='/uploads/whatsapp-qr.png?v='+Date.now()},15000)</script>
   `);
 });
+
 
 /* ===========================
    MySQL (envs no Railway)
