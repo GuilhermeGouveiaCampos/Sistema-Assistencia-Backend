@@ -5,8 +5,8 @@ const db = require('../db');
 const { logAudit } = require('../utils/audit');
 const sharp = require('sharp');
 
-// 🔔 WhatsApp (Evolution API) – avisa mudanças de LOCAL
-const { notifyLocalChange } = require('../utils/whats');
+// ⛔ Removido: Evolution / notifyLocalChange
+// const { notifyLocalChange } = require('../utils/whats');
 
 // Multer em memória (definido no middleware)
 const { upload } = require('../middleware/upload');
@@ -364,6 +364,7 @@ router.delete('/:id/imagens/:id_img', async (req, res) => {
 
 /**
  * Atualizar ordem + controlar timer (diagnóstico/orçamento)
+ * (sem Evolution; quem envia WhatsApp é o utils/whats-bot.js observando o banco)
  */
 router.put('/:id', async (req, res) => {
   const id_ordem = req.params.id;
@@ -387,9 +388,7 @@ router.put('/:id', async (req, res) => {
     if (!prevRows.length) return res.status(404).json({ erro: 'Ordem não encontrada' });
     const prev = prevRows[0];
 
-    /* 🔧 AJUSTE: validar local ATIVO e mapear status corretamente
-       - Se status_interno não existir em status_os, usa fallback por id_local (inclui LOC008 → 6)
-    */
+    // Validar local ativo e mapear status
     const [[locRow]] = await db.query(
       `SELECT TRIM(id_scanner) AS id_scanner,
               TRIM(local_instalado) AS local_instalado,
@@ -417,7 +416,6 @@ router.put('/:id', async (req, res) => {
     };
 
     if (!idStatusNum || Number.isNaN(idStatusNum)) {
-      // tenta pelo status_interno (ex.: "Em Diagnóstico"). Se não achar, cai no fallback.
       if (locRow.status_interno) {
         const [[st]] = await db.query(
           `SELECT id_status FROM status_os WHERE descricao = ? LIMIT 1`,
@@ -595,29 +593,8 @@ router.put('/:id', async (req, res) => {
       });
     }
 
-    // 🔔 WhatsApp (Evolution API): se mudou de LOCAL, avisa o cliente (após todas as atualizações)
-    if (localChanged) {
-      try {
-        const [[cli]] = await db.query(
-          `SELECT c.nome, c.celular, c.telefone
-             FROM cliente c
-             JOIN ordenservico o ON o.id_cliente = c.id_cliente
-            WHERE o.id_os = ?
-            LIMIT 1`,
-          [id_ordem]
-        );
-
-        await notifyLocalChange({
-          osId: Number(id_ordem),
-          localNome: newLocalRow?.local_instalado || String(idLocalStr),
-          idScanner: String(idLocalStr),
-          clienteNome: cli?.nome,
-          phone: cli?.celular || cli?.telefone || null
-        });
-      } catch (e) {
-        console.warn('[whats][put /:id] aviso falhou:', e.message);
-      }
-    }
+    // ⛔ Removido o aviso via Evolution/notifyLocalChange.
+    // O envio via WhatsApp acontece pelo utils/whats-bot.js monitorando o BD.
 
     res.json({ mensagem: 'Ordem atualizada e timer tratado com sucesso' });
   } catch (err) {
