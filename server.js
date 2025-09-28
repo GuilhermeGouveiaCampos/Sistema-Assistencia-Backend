@@ -185,8 +185,6 @@ app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/rfid", require("./routes/leitores"));
 app.use("/api/ardloc", require("./routes/ardloc"));
 const relatorios = require("./routes/relatorios");
-
-const relatorios = require("./routes/relatorios");
 console.log("Tipo relatorios =", typeof relatorios, "keys:", Object.keys(relatorios));
 app.use("/api/relatorios", relatorios.default || relatorios.router || relatorios);
 
