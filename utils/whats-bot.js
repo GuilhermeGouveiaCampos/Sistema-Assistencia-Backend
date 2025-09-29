@@ -93,26 +93,19 @@ const client = new Client({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   },
-  webVersion: '2.2412.54',
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-  },
+  // Evite travar em webVersion fixa — deixe o padrão do whatsapp-web.js pegar a versão suportada.
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
   restartOnAuthFail: true,
   qrMaxRetries: 0,
 });
 
-// Base de uploads: mesma lógica do server (se houver UPLOAD_DIR, usa o pai)
+// Base de uploads (igual ao server): se UPLOAD_DIR=/data/uploads/os → base=/data
 const uploadsRoot = process.env.UPLOAD_DIR
-  ? require('path').resolve(process.env.UPLOAD_DIR)
-  : require('path').join(__dirname, '..', 'uploads', 'os');
-const uploadsBase = require('path').dirname(uploadsRoot);
-
-// Salva o QR aqui (será /data/uploads/whatsapp-qr.png quando UPLOAD_DIR=/data/uploads/os)
-const QR_PNG_PATH = require('path').join(uploadsBase, 'whatsapp-qr.png');
-
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(__dirname, '..', 'uploads', 'os');
+const uploadsBase = path.dirname(uploadsRoot);
+const QR_PNG_PATH = path.join(uploadsBase, 'whatsapp-qr.png');
 
 client.on('qr', async (qr) => {
   console.clear();
@@ -156,7 +149,7 @@ const fmt = (d) => d ? new Date(d).toLocaleString('pt-BR') : '-';
 
 function normalizeBR(phoneRaw) {
   if (!phoneRaw) return null;
-  let d = String(phoneRaw).replace(/\D/g, ''); // só números
+  let d = String(phoneRaw).replace(/\D/g, '');
   d = d.replace(/^0+/, '');
   if (d.startsWith('55')) {
     if (d.length >= 12 && d.length <= 13) return d;
@@ -173,7 +166,7 @@ async function logEnvio(p, osId, idLocal, destino, mensagem) {
         id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
         id_os INT NOT NULL,
         id_local VARCHAR(50) NOT NULL,
-        destino VARCHAR(32) NOT NULL,
+        destino VARCHAR(64) NOT NULL,
         mensagem TEXT NOT NULL,
         data_envio DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         KEY idx_os (id_os),
@@ -181,7 +174,7 @@ async function logEnvio(p, osId, idLocal, destino, mensagem) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     await p.query(
-      `INSERT INTO ${SCHEMA}.whats_envios (id_os, id_local, destino, mensagem) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO ${SCHEMA}.whats_envios (id_os, id_local, destino, mensagem) VALUES (?, ?, ?, ?);`,
       [osId, idLocal, destino, mensagem]
     );
   } catch (e) {
@@ -189,16 +182,35 @@ async function logEnvio(p, osId, idLocal, destino, mensagem) {
   }
 }
 
-async function sendTo(numbers, text, osId, idLocal) {
-  const p = await getPool();
-  for (const num of numbers) {
-    const jid = `${num}@c.us`;
+/** Resolve números para JIDs válidos (somente usuários registrados). */
+async function resolveJids(numbers) {
+  const out = [];
+  for (const raw of numbers) {
+    const num = normalizeBR(raw);
+    if (!num) continue;
     try {
-      await client.sendMessage(jid, text);
-      console.log(`[whats] → enviado p/ ${num} (OS ${osId}, ${idLocal})`);
-      await logEnvio(p, osId, idLocal, num, text);
+      const numberId = await client.getNumberId(num);
+      if (numberId) out.push({ num, jid: numberId._serialized });
+      else console.log(`✗ ${num} não está no WhatsApp (ignorado).`);
     } catch (e) {
-      console.error(`[whats] Falha ao enviar p/ ${num}:`, e?.message || e);
+      console.log(`✗ Falha ao resolver ${num}:`, e?.message || e);
+    }
+  }
+  // remove duplicados por JID
+  const seen = new Set();
+  return out.filter(({ jid }) => (seen.has(jid) ? false : seen.add(jid)));
+}
+
+async function sendToValidated(numbers, text, osId, idLocal) {
+  const p = await getPool();
+  const targets = await resolveJids(numbers);
+  for (const t of targets) {
+    try {
+      await client.sendMessage(t.jid, text);
+      console.log(`[whats] → enviado p/ ${t.num} (jid=${t.jid}) | OS ${osId} | ${idLocal}`);
+      await logEnvio(p, osId, idLocal, t.jid, text);
+    } catch (e) {
+      console.error(`[whats] Falha ao enviar p/ ${t.num} (jid=${t.jid}):`, e?.message || e);
     }
   }
 }
@@ -240,7 +252,7 @@ async function checkOnce() {
       os.${OS_ID_LOCAL} AS id_local,
       os.id_status_os AS id_status_os,
       s.descricao AS status_desc,
-      COALESCE(c.${CLIENTE_FONE}, c.${CLIENTE_FONE}) AS telefone_cliente
+      c.${CLIENTE_FONE} AS telefone_cliente
     FROM ${OS_TABLE} os
     LEFT JOIN ${CLIENTE_TABLE} c ON c.${CLIENTE_ID1} = os.${OS_ID_CLIENTE}
     LEFT JOIN ${SCHEMA}.status_os s ON s.id_status = os.id_status_os
@@ -252,6 +264,7 @@ async function checkOnce() {
     const prevLocal = state.lastSeen[os.id_os];
     const prevStatus = state.lastStatus[os.id_os];
 
+    // Monte lista de destinos: cliente + extras por local
     const to = [];
     const telCliente = normalizeBR(os.telefone_cliente);
     if (telCliente) to.push(telCliente);
@@ -261,6 +274,7 @@ async function checkOnce() {
       if (e) to.push(e);
     }
 
+    // Atualiza baseline se não houver destino
     if (!to.length) {
       state.lastSeen[os.id_os] = os.id_local;
       state.lastStatus[os.id_os] = os.id_status_os;
@@ -272,7 +286,8 @@ async function checkOnce() {
       state.lastSeen[os.id_os] = os.id_local;
       state.lastStatus[os.id_os] = os.id_status_os;
       saveState(state);
-      await sendTo(to, MESSAGES_BY_LOCAL.get('LOC001'), os.id_os, os.id_local);
+      const texto = MESSAGES_BY_LOCAL.get('LOC001') || messageForLocal(os.id_local, os);
+      await sendToValidated(to, texto, os.id_os, os.id_local);
       continue;
     }
 
@@ -282,7 +297,7 @@ async function checkOnce() {
       state.lastStatus[os.id_os] = os.id_status_os;
       saveState(state);
       const texto = messageForLocal(os.id_local, os);
-      await sendTo(to, texto, os.id_os, os.id_local);
+      await sendToValidated(to, texto, os.id_os, os.id_local);
       continue;
     }
 
@@ -292,7 +307,7 @@ async function checkOnce() {
       saveState(state);
       if (os.status_desc && MESSAGES_BY_STATUS.has(os.status_desc)) {
         const texto = MESSAGES_BY_STATUS.get(os.status_desc);
-        await sendTo(to, texto, os.id_os, os.id_local);
+        await sendToValidated(to, texto, os.id_os, os.id_local);
       }
     }
   }
