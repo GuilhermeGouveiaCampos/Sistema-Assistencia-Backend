@@ -195,11 +195,6 @@ console.log("Tipo relatorios =", typeof relatorios, "keys:", Object.keys(relator
 app.use("/api/relatorios", relatorios.default || relatorios.router || relatorios);
 
 /* ===========================
-   WhatsApp bot
-   =========================== */
-require("./utils/whats-bot");
-
-/* ===========================
    Tratamento de erros
    =========================== */
 process.on("unhandledRejection", (reason) => {

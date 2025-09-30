@@ -180,9 +180,10 @@ router.get('/tecnicos', async (_req, res) => {
   }
 });
 
-/* ✅ Locais: lista TODOS (sem join/duplicatas) */
+/* ✅ Locais: lista APENAS ativos + mapeia id_status com fallback */
 router.get('/locais', async (_req, res) => {
   try {
+    // Só locais ativos
     const [locais] = await db.query(`
       SELECT 
         TRIM(id_scanner)      AS id_scanner,
@@ -190,37 +191,53 @@ router.get('/locais', async (_req, res) => {
         TRIM(status_interno)  AS status_interno,
         TRIM(status)          AS status
       FROM local
+      WHERE TRIM(status) = 'ativo'
       ORDER BY id_scanner
     `);
 
-    // mapa status_os (descricao -> id_status), se existir
-    let statusMap = new Map();
+    // status_os (descricao -> id_status)
+    const statusMap = new Map();
     try {
-      const [sts] = await db.query(`SELECT id_status, descricao FROM status_os`);
-      for (const s of sts) statusMap.set(String(s.descricao || '').trim(), Number(s.id_status));
+      const [sts] = await db.query(`SELECT id_status, TRIM(descricao) AS descricao FROM status_os`);
+      for (const s of sts) statusMap.set(String(s.descricao || ''), Number(s.id_status));
     } catch { /* opcional */ }
+
+    // 🧭 fallback por ID do local (mesmo usado no PUT)
+    const MAP_LOCAL_TO_STATUS = {
+      LOC_DIAG: 2, // Diagnóstico
+      LOC001:  1,  // Recebido
+      LOC002:  2,  // Em Diagnóstico
+      LOC003:  3,  // Aguardando Aprovação
+      LOC004:  4,  // Aguardando Peça
+      LOC005:  5,  // Em Reparo
+      LOC006:  6,  // Finalizado
+      LOC007:  7,  // Aguardando Retirada
+      LOC008:  6,  // Com Cliente → Finalizado (Entregue)
+    };
 
     const vistos = new Set();
     const saida = [];
+
     for (const l of locais) {
       const key = String(l.id_scanner || '').trim();
       if (!key || vistos.has(key)) continue;
       vistos.add(key);
 
       const desc = String(l.status_interno || '').trim();
-      const id_status = statusMap.has(desc) ? statusMap.get(desc) : 0;
+      // 1º tenta pela descrição (status_os); 2º usa fallback pelo id_scanner
+      const id_status = statusMap.has(desc) ? statusMap.get(desc) : (MAP_LOCAL_TO_STATUS[key] || 0);
 
       saida.push({
         id_local: key,
         id_scanner: key,
         local_instalado: String(l.local_instalado || '').trim(),
         status_interno: desc,
-        id_status: Number(id_status || 0),
-        status: String(l.status || '').trim()
+        id_status: Number(id_status || 0),   // 👈 agora LOC008 volta com ID também
+        status: 'ativo',
       });
     }
 
-    console.log(`[ordens/locais] retornando ${saida.length} locais`);
+    console.log(`[ordens/locais] retornando ${saida.length} locais ativos`);
     res.json(saida);
   } catch (err) {
     console.error('GET /api/ordens/locais error:', err);
@@ -368,8 +385,9 @@ router.delete('/:id/imagens/:id_img', async (req, res) => {
  */
 router.put('/:id', async (req, res) => {
   const id_ordem = req.params.id;
-  let { descricao_problema, id_local, id_status } = req.body || {};
   const userId = Number(req.headers['x-user-id']) || null;
+  let { descricao_problema, id_local, id_status, descricao_servico } = req.body || {};
+
 
   if (!/^\d+$/.test(String(id_ordem))) {
     return res.status(400).json({ erro: 'ID inválido' });
@@ -456,14 +474,15 @@ router.put('/:id', async (req, res) => {
     const newOnBench  = isBancadaDiag(newLocalRow?.local_instalado);
 
     const [updMain] = await db.query(
-      `UPDATE ordenservico
-          SET descricao_problema = ?,
-              id_local          = ?,
-              id_status_os      = ?,
-              data_atualizacao  = NOW()
-        WHERE id_os = ?`,
-      [descricao_problema, idLocalStr, idStatusNum, id_ordem]
-    );
+  `UPDATE ordenservico
+      SET descricao_problema = ?,
+          descricao_servico  = COALESCE(?, descricao_servico),  -- 👈 adiciona
+          id_local           = ?,
+          id_status_os       = ?,
+          data_atualizacao   = NOW()
+    WHERE id_os = ?`,
+  [descricao_problema, descricao_servico, idLocalStr, idStatusNum, id_ordem]
+);
     if (updMain.affectedRows === 0) {
       return res.status(404).json({ erro: 'Ordem não encontrada' });
     }
