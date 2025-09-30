@@ -30,6 +30,7 @@ const {
   WPP_SESSION_NAME = 'sat-assistencia',
   POLL_INTERVAL_MS = 5000,
   WPP_DATA_PATH = './.wwebjs_auth',
+  WHATS_NOTIFY_URL, // 👈 opcional: URL para notificar o server e acionar o SSE
 } = process.env;
 
 /* ========= Mensagens por LOCAL ========= */
@@ -93,7 +94,6 @@ const client = new Client({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   },
-  // Evite travar em webVersion fixa — deixe o padrão do whatsapp-web.js pegar a versão suportada.
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
   restartOnAuthFail: true,
@@ -182,6 +182,29 @@ async function logEnvio(p, osId, idLocal, destino, mensagem) {
   }
 }
 
+/* ========= 🔔 Notificação do front (SSE) ========= */
+/* POST no server para emitir no /api/whats/events.
+   Se WHATS_NOTIFY_URL não estiver setada, usa localhost:3001 */
+const NOTIFY_URL = WHATS_NOTIFY_URL || 'http://localhost:3001/api/whats/notify';
+
+async function notifyFront({ id_os, id_local, to, text }) {
+  try {
+    // Node 18+ tem fetch nativo
+    await fetch(NOTIFY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'whats:sent',
+        id_os,
+        id_local,
+        to,
+        text,
+        at: new Date().toISOString(),
+      }),
+    }).catch(() => {}); // fire-and-forget
+  } catch (_) { /* silencioso */ }
+}
+
 /** Resolve números para JIDs válidos (somente usuários registrados). */
 async function resolveJids(numbers) {
   const out = [];
@@ -209,6 +232,9 @@ async function sendToValidated(numbers, text, osId, idLocal) {
       await client.sendMessage(t.jid, text);
       console.log(`[whats] → enviado p/ ${t.num} (jid=${t.jid}) | OS ${osId} | ${idLocal}`);
       await logEnvio(p, osId, idLocal, t.jid, text);
+
+      // 🔔 avisa o servidor para disparar SSE (toast no front)
+      notifyFront({ id_os: osId, id_local: idLocal, to: t.num, text });
     } catch (e) {
       console.error(`[whats] Falha ao enviar p/ ${t.num} (jid=${t.jid}):`, e?.message || e);
     }

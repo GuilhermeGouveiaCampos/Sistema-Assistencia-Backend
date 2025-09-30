@@ -37,6 +37,8 @@ function getClienteColumns(db, cols, cb) {
   }
 }
 
+/* ======================= LISTAGEM ======================= */
+
 /**
  * GET /api/clientes?nome=&cpf=
  */
@@ -153,7 +155,7 @@ router.delete('/:id', (req, res) => {
   });
 });
 
-/** GET /api/clientes/:id */
+/** GET /api/clientes/:id  (retorna cliente + endereço se existir) */
 router.get('/:id', (req, res) => {
   const db = req.app.get('db');
   const id = Number(req.params.id);
@@ -174,23 +176,53 @@ router.get('/:id', (req, res) => {
         return res.status(500).json({ erro: 'Erro ao buscar cliente.' });
       }
       if (!rows || rows.length === 0) return res.status(404).json({ erro: 'Cliente não encontrado.' });
-      res.json(rows[0]);
+
+      const cliente = rows[0];
+      // tenta pegar endereço
+      db.query(
+        `SELECT id_endereco, rua, numero, complemento, bairro, cidade, estado, cep
+           FROM endereco WHERE id_cliente = ? LIMIT 1`,
+        [id],
+        (err2, eRows) => {
+          if (err2) {
+            console.warn('⚠️ Erro ao buscar endereço (seguindo sem travar):', err2?.sqlMessage || err2);
+            return res.json(cliente);
+          }
+          if (eRows && eRows.length) cliente.endereco = eRows[0];
+          return res.json(cliente);
+        }
+      );
     });
   });
 });
 
-/** POST /api/clientes */
+/* ======================= CADASTRO / ATUALIZAÇÃO (com ENDEREÇO) ======================= */
+
+/** POST /api/clientes  (grava cliente + endereço em transação) */
 router.post('/', (req, res) => {
   const db = req.app.get('db');
+
+  // dados do cliente
   let { nome, cpf, telefone, data_nascimento, status } = req.body || {};
   if (!nome || !cpf) return res.status(400).json({ erro: 'Nome e CPF são obrigatórios.' });
-
   const cpfClean = onlyDigits(cpf);
   const dataSQL = toSqlDate(data_nascimento);
 
-  getClienteColumns(db, ['telefone', 'celular','status','data_nascimento'], (cols) => {
+  // dados do endereço (opcional, mas iremos gravar se vier)
+  const endereco = {
+    rua: norm(req.body?.rua),
+    numero: norm(req.body?.numero),
+    complemento: norm(req.body?.complemento),
+    bairro: norm(req.body?.bairro),
+    cidade: norm(req.body?.cidade),
+    estado: norm(req.body?.estado).toUpperCase().slice(0, 2),
+    cep: onlyDigits(req.body?.cep),
+  };
+
+  getClienteColumns(db, ['telefone','celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
+    // valida CPF duplicado
     db.query('SELECT 1 FROM cliente WHERE cpf = ? LIMIT 1', [cpfClean], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup POST /api/clientes:', err?.sqlMessage || err);
@@ -198,27 +230,102 @@ router.post('/', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado.' });
 
-      const colsList = ['nome','cpf'];
-      const qms = ['?','?'];
-      const params = [nome, cpfClean];
-
-      if (telCol) { colsList.push(telCol); qms.push('?'); params.push(telefone ?? ''); }
-      if (cols.has('data_nascimento') && dataSQL) { colsList.push('data_nascimento'); qms.push('?'); params.push(dataSQL); }
-      if (cols.has('status')) { colsList.push('status'); qms.push('?'); params.push(status || 'ativo'); }
-
-      const sql = `INSERT INTO cliente (${colsList.join(', ')}) VALUES (${qms.join(', ')})`;
-      db.query(sql, params, (err2, result) => {
-        if (err2) {
-          console.error('⛔ Erro DB INSERT /api/clientes:', err2?.sqlMessage || err2);
-          return res.status(500).json({ erro: 'Erro ao cadastrar cliente.' });
+      // abre transação
+      db.getConnection((errConn, conn) => {
+        if (errConn) {
+          console.error('⛔ Erro getConnection:', errConn);
+          return res.status(500).json({ erro: 'Falha de conexão com o banco.' });
         }
-        res.status(201).json({ mensagem: 'Cliente cadastrado com sucesso.', id_cliente: result.insertId });
+
+        conn.beginTransaction((errTrx) => {
+          if (errTrx) {
+            conn.release();
+            console.error('⛔ Erro beginTransaction:', errTrx);
+            return res.status(500).json({ erro: 'Falha ao iniciar transação.' });
+          }
+
+          // monta INSERT cliente
+          const colsList = ['nome','cpf'];
+          const qms = ['?','?'];
+          const params = [nome, cpfClean];
+
+          if (telCol) { colsList.push(telCol); qms.push('?'); params.push(telefone ?? ''); }
+          if (cols.has('data_nascimento') && dataSQL) { colsList.push('data_nascimento'); qms.push('?'); params.push(dataSQL); }
+          if (cols.has('status')) { colsList.push('status'); qms.push('?'); params.push(status || 'ativo'); }
+
+          const sqlCliente = `INSERT INTO cliente (${colsList.join(', ')}) VALUES (${qms.join(', ')})`;
+
+          conn.query(sqlCliente, params, (errIns, result) => {
+            if (errIns) {
+              return conn.rollback(() => {
+                conn.release();
+                console.error('⛔ Erro INSERT cliente:', errIns?.sqlMessage || errIns);
+                res.status(500).json({ erro: 'Erro ao cadastrar cliente.' });
+              });
+            }
+
+            const id_cliente = result.insertId;
+
+            // se não veio endereço, apenas commita
+            const temEndereco =
+              endereco.rua || endereco.numero || endereco.bairro ||
+              endereco.cidade || endereco.estado || endereco.cep || endereco.complemento;
+
+            if (!temEndereco) {
+              return conn.commit((errC) => {
+                conn.release();
+                if (errC) {
+                  console.error('⛔ Erro commit (sem endereço):', errC);
+                  return res.status(500).json({ erro: 'Falha ao finalizar cadastro.' });
+                }
+                return res.status(201).json({ mensagem: 'Cliente cadastrado com sucesso.', id_cliente });
+              });
+            }
+
+            // INSERT endereço
+            const sqlEnd = `
+              INSERT INTO endereco (id_cliente, rua, numero, complemento, bairro, cidade, estado, cep)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `;
+            conn.query(
+              sqlEnd,
+              [
+                id_cliente,
+                endereco.rua || null,
+                endereco.numero || null,
+                endereco.complemento || null,
+                endereco.bairro || null,
+                endereco.cidade || null,
+                endereco.estado || null,
+                endereco.cep || null,
+              ],
+              (errEnd) => {
+                if (errEnd) {
+                  return conn.rollback(() => {
+                    conn.release();
+                    console.error('⛔ Erro INSERT endereço:', errEnd?.sqlMessage || errEnd);
+                    res.status(500).json({ erro: 'Erro ao salvar endereço do cliente.' });
+                  });
+                }
+
+                conn.commit((errC) => {
+                  conn.release();
+                  if (errC) {
+                    console.error('⛔ Erro commit (com endereço):', errC);
+                    return res.status(500).json({ erro: 'Falha ao finalizar cadastro.' });
+                  }
+                  return res.status(201).json({ mensagem: 'Cliente cadastrado com sucesso.', id_cliente });
+                });
+              }
+            );
+          });
+        });
       });
     });
   });
 });
 
-/** PUT /api/clientes/:id */
+/** PUT /api/clientes/:id  (atualiza cliente + faz UPSERT do endereço) */
 router.put('/:id', (req, res) => {
   const db = req.app.get('db');
   const id = Number(req.params.id);
@@ -230,9 +337,20 @@ router.put('/:id', (req, res) => {
   const cpfClean = onlyDigits(cpf);
   const dataSQL = toSqlDate(data_nascimento);
 
+  const endereco = {
+    rua: norm(req.body?.rua),
+    numero: norm(req.body?.numero),
+    complemento: norm(req.body?.complemento),
+    bairro: norm(req.body?.bairro),
+    cidade: norm(req.body?.cidade),
+    estado: norm(req.body?.estado).toUpperCase().slice(0, 2),
+    cep: onlyDigits(req.body?.cep),
+  };
+
   getClienteColumns(db, ['telefone','celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
+    // bloqueia CPF duplicado em outro cliente
     db.query('SELECT 1 FROM cliente WHERE cpf = ? AND id_cliente <> ? LIMIT 1', [cpfClean, id], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup PUT /api/clientes:', err?.sqlMessage || err);
@@ -240,23 +358,151 @@ router.put('/:id', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado para outro cliente.' });
 
-      const sets = ['nome = ?','cpf = ?'];
-      const params = [nome, cpfClean];
-
-      if (telCol) { sets.push(`${telCol} = ?`); params.push(telefone ?? ''); }
-      if (cols.has('data_nascimento')) { sets.push('data_nascimento = ?'); params.push(dataSQL); }
-      if (cols.has('status') && status) { sets.push('status = ?'); params.push(status); }
-
-      const sql = `UPDATE cliente SET ${sets.join(', ')} WHERE id_cliente = ?`;
-      params.push(id);
-
-      db.query(sql, params, (err2, result) => {
-        if (err2) {
-          console.error('⛔ Erro DB UPDATE /api/clientes:', err2?.sqlMessage || err2, '\nSQL:', sql, '\nParams:', params);
-          return res.status(500).json({ erro: 'Erro ao atualizar cliente.' });
+      db.getConnection((errConn, conn) => {
+        if (errConn) {
+          console.error('⛔ Erro getConnection:', errConn);
+          return res.status(500).json({ erro: 'Falha de conexão com o banco.' });
         }
-        if (!result || result.affectedRows === 0) return res.status(404).json({ erro: 'Cliente não encontrado.' });
-        res.json({ mensagem: 'Cliente atualizado com sucesso.' });
+
+        conn.beginTransaction((errTrx) => {
+          if (errTrx) {
+            conn.release();
+            console.error('⛔ Erro beginTransaction:', errTrx);
+            return res.status(500).json({ erro: 'Falha ao iniciar transação.' });
+          }
+
+          // UPDATE cliente
+          const sets = ['nome = ?','cpf = ?'];
+          const params = [nome, cpfClean];
+          if (telCol) { sets.push(`${telCol} = ?`); params.push(telefone ?? ''); }
+          if (cols.has('data_nascimento')) { sets.push('data_nascimento = ?'); params.push(dataSQL); }
+          if (cols.has('status') && status) { sets.push('status = ?'); params.push(status); }
+
+          const sqlUpd = `UPDATE cliente SET ${sets.join(', ')} WHERE id_cliente = ?`;
+          params.push(id);
+
+          conn.query(sqlUpd, params, (errUpd, result) => {
+            if (errUpd) {
+              return conn.rollback(() => {
+                conn.release();
+                console.error('⛔ Erro UPDATE cliente:', errUpd?.sqlMessage || errUpd);
+                res.status(500).json({ erro: 'Erro ao atualizar cliente.' });
+              });
+            }
+            if (!result || result.affectedRows === 0) {
+              return conn.rollback(() => {
+                conn.release();
+                res.status(404).json({ erro: 'Cliente não encontrado.' });
+              });
+            }
+
+            // upsert endereço: se existir -> UPDATE; senão -> INSERT
+            const temEndereco =
+              endereco.rua || endereco.numero || endereco.bairro ||
+              endereco.cidade || endereco.estado || endereco.cep || endereco.complemento;
+
+            if (!temEndereco) {
+              // nenhum campo enviado → apenas commit
+              return conn.commit((errC) => {
+                conn.release();
+                if (errC) {
+                  console.error('⛔ Erro commit (sem endereço):', errC);
+                  return res.status(500).json({ erro: 'Falha ao finalizar atualização.' });
+                }
+                return res.json({ mensagem: 'Cliente atualizado com sucesso.' });
+              });
+            }
+
+            conn.query(
+              'SELECT id_endereco FROM endereco WHERE id_cliente = ? LIMIT 1',
+              [id],
+              (errSel, eRows) => {
+                if (errSel) {
+                  return conn.rollback(() => {
+                    conn.release();
+                    console.error('⛔ Erro SELECT endereço:', errSel?.sqlMessage || errSel);
+                    res.status(500).json({ erro: 'Erro ao verificar endereço.' });
+                  });
+                }
+
+                if (eRows && eRows.length) {
+                  // UPDATE
+                  const sqlEUpd = `
+                    UPDATE endereco
+                       SET rua = ?, numero = ?, complemento = ?, bairro = ?, cidade = ?, estado = ?, cep = ?
+                     WHERE id_cliente = ?
+                  `;
+                  conn.query(
+                    sqlEUpd,
+                    [
+                      endereco.rua || null,
+                      endereco.numero || null,
+                      endereco.complemento || null,
+                      endereco.bairro || null,
+                      endereco.cidade || null,
+                      endereco.estado || null,
+                      endereco.cep || null,
+                      id,
+                    ],
+                    (errEU) => {
+                      if (errEU) {
+                        return conn.rollback(() => {
+                          conn.release();
+                          console.error('⛔ Erro UPDATE endereço:', errEU?.sqlMessage || errEU);
+                          res.status(500).json({ erro: 'Erro ao atualizar endereço.' });
+                        });
+                      }
+                      conn.commit((errC) => {
+                        conn.release();
+                        if (errC) {
+                          console.error('⛔ Erro commit (update endereço):', errC);
+                          return res.status(500).json({ erro: 'Falha ao finalizar atualização.' });
+                        }
+                        return res.json({ mensagem: 'Cliente atualizado com sucesso.' });
+                      });
+                    }
+                  );
+                } else {
+                  // INSERT
+                  const sqlEIns = `
+                    INSERT INTO endereco (id_cliente, rua, numero, complemento, bairro, cidade, estado, cep)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  `;
+                  conn.query(
+                    sqlEIns,
+                    [
+                      id,
+                      endereco.rua || null,
+                      endereco.numero || null,
+                      endereco.complemento || null,
+                      endereco.bairro || null,
+                      endereco.cidade || null,
+                      endereco.estado || null,
+                      endereco.cep || null,
+                    ],
+                    (errEI) => {
+                      if (errEI) {
+                        return conn.rollback(() => {
+                          conn.release();
+                          console.error('⛔ Erro INSERT endereço:', errEI?.sqlMessage || errEI);
+                          res.status(500).json({ erro: 'Erro ao salvar endereço.' });
+                        });
+                      }
+                      conn.commit((errC) => {
+                        conn.release();
+                        if (errC) {
+                          console.error('⛔ Erro commit (insert endereço):', errC);
+                          return res.status(500).json({ erro: 'Falha ao finalizar atualização.' });
+                        }
+                        return res.json({ mensagem: 'Cliente atualizado com sucesso.' });
+                      });
+                    }
+                  );
+                }
+              }
+            );
+          });
+        });
       });
     });
   });

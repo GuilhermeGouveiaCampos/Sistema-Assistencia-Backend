@@ -15,6 +15,14 @@ const fs = require("fs");
 const app = express();
 
 /* ===========================
+   🔔 Event Bus (SSE p/ WhatsApp)
+   =========================== */
+// no topo
+const { EventEmitter } = require("events");
+const eventBus = new EventEmitter();
+app.set("eventBus", eventBus);
+
+/* ===========================
    Versão / commit
    =========================== */
 const COMMIT =
@@ -168,6 +176,32 @@ const apiLimiter = rateLimit({
   skip: (req) => req.method === "OPTIONS",
 });
 app.use("/api", apiLimiter);
+
+/* ===========================
+   🔔 SSE: eventos de WhatsApp enviados
+   =========================== */
+app.get("/api/whats/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const send = (payload) => {
+    try {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (_) {
+      // ignore write errors (client may have disconnected)
+    }
+  };
+
+  const onSent = (payload) => send(payload);
+  eventBus.on("whats:sent", onSent);
+
+  req.on("close", () => {
+    eventBus.off("whats:sent", onSent);
+    res.end();
+  });
+});
 
 /* ===========================
    Rotas da aplicação
