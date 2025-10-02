@@ -33,6 +33,16 @@ const {
   WHATS_NOTIFY_URL, // 👈 opcional: URL para notificar o server e acionar o SSE
 } = process.env;
 
+
+console.log('[WPP] DATA PATH =', WPP_DATA_PATH, ' | SESSION =', WPP_SESSION_NAME);
+try {
+  const testDir = WPP_DATA_PATH;
+  fs.mkdirSync(testDir, { recursive: true });
+  console.log('[WPP] Conteúdo inicial de', testDir, ':', fs.readdirSync(testDir));
+} catch (e) {
+  console.error('[WPP] ERRO verificando diretório:', e.message);
+}
+
 /* ========= Mensagens por LOCAL ========= */
 const MESSAGES_BY_LOCAL = new Map([
   ['LOC001', '✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento.'],

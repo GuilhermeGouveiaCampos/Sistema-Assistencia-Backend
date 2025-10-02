@@ -243,6 +243,18 @@ app.use((err, req, res, next) => {
   res.status(500).json({ erro: "Erro interno no servidor." });
 });
 
+app.get('/debug/wpp', (_req, res) => {
+  const base = process.env.WPP_DATA_PATH || '/data/.wwebjs_auth';
+  try {
+    const list = fs.readdirSync(base);
+    const sessions = list.filter(n => n.startsWith('session-'));
+    res.json({ base, list, sessions });
+  } catch (e) {
+    res.status(500).json({ base, error: e.message });
+  }
+});
+
+
 /* ===========================
    Sobe servidor
    =========================== */
