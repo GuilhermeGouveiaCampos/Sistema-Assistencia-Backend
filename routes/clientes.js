@@ -26,7 +26,7 @@ function getClienteColumns(db, cols, cb) {
     db.query(sql, cols, (err, rows) => {
       if (err) {
         console.error('⛔ Erro ao checar colunas de cliente:', err?.sqlMessage || err);
-        return cb(new Set()); // segue sem travar
+        return cb(new Set());
       }
       const found = new Set((rows || []).map(r => r.Field));
       cb(found);
@@ -178,7 +178,6 @@ router.get('/:id', (req, res) => {
       if (!rows || rows.length === 0) return res.status(404).json({ erro: 'Cliente não encontrado.' });
 
       const cliente = rows[0];
-      // tenta pegar endereço
       db.query(
         `SELECT id_endereco, rua, numero, complemento, bairro, cidade, estado, cep
            FROM endereco WHERE id_cliente = ? LIMIT 1`,
@@ -208,7 +207,7 @@ router.post('/', (req, res) => {
   const cpfClean = onlyDigits(cpf);
   const dataSQL = toSqlDate(data_nascimento);
 
-  // dados do endereço (opcional, mas iremos gravar se vier)
+  // dados do endereço (opcional)
   const endereco = {
     rua: norm(req.body?.rua),
     numero: norm(req.body?.numero),
@@ -222,7 +221,6 @@ router.post('/', (req, res) => {
   getClienteColumns(db, ['telefone','celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
-    // valida CPF duplicado
     db.query('SELECT 1 FROM cliente WHERE cpf = ? LIMIT 1', [cpfClean], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup POST /api/clientes:', err?.sqlMessage || err);
@@ -230,7 +228,6 @@ router.post('/', (req, res) => {
       }
       if (dup && dup.length) return res.status(409).json({ erro: 'CPF já cadastrado.' });
 
-      // abre transação
       db.getConnection((errConn, conn) => {
         if (errConn) {
           console.error('⛔ Erro getConnection:', errConn);
@@ -244,7 +241,6 @@ router.post('/', (req, res) => {
             return res.status(500).json({ erro: 'Falha ao iniciar transação.' });
           }
 
-          // monta INSERT cliente
           const colsList = ['nome','cpf'];
           const qms = ['?','?'];
           const params = [nome, cpfClean];
@@ -266,7 +262,6 @@ router.post('/', (req, res) => {
 
             const id_cliente = result.insertId;
 
-            // se não veio endereço, apenas commita
             const temEndereco =
               endereco.rua || endereco.numero || endereco.bairro ||
               endereco.cidade || endereco.estado || endereco.cep || endereco.complemento;
@@ -282,7 +277,6 @@ router.post('/', (req, res) => {
               });
             }
 
-            // INSERT endereço
             const sqlEnd = `
               INSERT INTO endereco (id_cliente, rua, numero, complemento, bairro, cidade, estado, cep)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -325,7 +319,7 @@ router.post('/', (req, res) => {
   });
 });
 
-/** PUT /api/clientes/:id  (atualiza cliente + faz UPSERT do endereço) */
+/** PUT /api/clientes/:id  (atualiza cliente + UPSERT do endereço) */
 router.put('/:id', (req, res) => {
   const db = req.app.get('db');
   const id = Number(req.params.id);
@@ -350,7 +344,6 @@ router.put('/:id', (req, res) => {
   getClienteColumns(db, ['telefone','celular','status','data_nascimento'], (cols) => {
     const telCol = cols.has('telefone') ? 'telefone' : (cols.has('celular') ? 'celular' : null);
 
-    // bloqueia CPF duplicado em outro cliente
     db.query('SELECT 1 FROM cliente WHERE cpf = ? AND id_cliente <> ? LIMIT 1', [cpfClean, id], (err, dup) => {
       if (err) {
         console.error('⛔ Erro DB dup PUT /api/clientes:', err?.sqlMessage || err);
@@ -371,7 +364,6 @@ router.put('/:id', (req, res) => {
             return res.status(500).json({ erro: 'Falha ao iniciar transação.' });
           }
 
-          // UPDATE cliente
           const sets = ['nome = ?','cpf = ?'];
           const params = [nome, cpfClean];
           if (telCol) { sets.push(`${telCol} = ?`); params.push(telefone ?? ''); }
@@ -396,13 +388,11 @@ router.put('/:id', (req, res) => {
               });
             }
 
-            // upsert endereço: se existir -> UPDATE; senão -> INSERT
             const temEndereco =
               endereco.rua || endereco.numero || endereco.bairro ||
               endereco.cidade || endereco.estado || endereco.cep || endereco.complemento;
 
             if (!temEndereco) {
-              // nenhum campo enviado → apenas commit
               return conn.commit((errC) => {
                 conn.release();
                 if (errC) {
@@ -426,7 +416,7 @@ router.put('/:id', (req, res) => {
                 }
 
                 if (eRows && eRows.length) {
-                  // UPDATE
+                  // UPDATE endereço
                   const sqlEUpd = `
                     UPDATE endereco
                        SET rua = ?, numero = ?, complemento = ?, bairro = ?, cidade = ?, estado = ?, cep = ?
@@ -463,7 +453,7 @@ router.put('/:id', (req, res) => {
                     }
                   );
                 } else {
-                  // INSERT
+                  // INSERT endereço
                   const sqlEIns = `
                     INSERT INTO endereco (id_cliente, rua, numero, complemento, bairro, cidade, estado, cep)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
