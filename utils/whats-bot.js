@@ -1,78 +1,98 @@
 // backend/utils/whats-bot.js
-require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const qrcodeTerminal = require('qrcode-terminal');
-const qrcodeImage = require('qrcode');
-const mysql = require('mysql2/promise');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+
+const qrcodeTerminal = require("qrcode-terminal");
+const qrcodeImage = require("qrcode");
+const mysql = require("mysql2/promise");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 
 /* ========= SCHEMA / TABELAS ========= */
-const SCHEMA = 'assistencia_tecnica';
+const SCHEMA = "assistencia_tecnica";
 const OS_TABLE = `${SCHEMA}.ordenservico`;
 const CLIENTE_TABLE = `${SCHEMA}.cliente`;
 
 /* ========= COLUNAS ========= */
-const OS_PK = 'id_os';
-const OS_ID_CLIENTE = 'id_cliente';
-const OS_ID_LOCAL = 'id_local';
-const OS_DESC_PROB = 'descricao_problema';
-const OS_DATA_CR = 'data_criacao';
-const OS_DATA_AT = 'data_atualizacao';
-const OS_ID_TEC = 'id_tecnico';
+const OS_PK = "id_os";
+const OS_ID_CLIENTE = "id_cliente";
+const OS_ID_LOCAL = "id_local";
+const OS_DESC_PROB = "descricao_problema";
+const OS_DATA_CR = "data_criacao";
+const OS_DATA_AT = "data_atualizacao";
+const OS_ID_TEC = "id_tecnico";
 
-const CLIENTE_ID1 = 'id_cliente';
-const CLIENTE_FONE = 'telefone';
+const CLIENTE_ID1 = "id_cliente";
+const CLIENTE_FONE = "telefone";
 
 /* ========= ENV ========= */
 const {
-  DB_HOST, DB_PORT = 3306, DB_USER, DB_PASS, DB_NAME,
-  WPP_SESSION_NAME = 'sat-assistencia',
+  DB_HOST,
+  DB_PORT = 3306,
+  DB_USER,
+  DB_PASS,
+  DB_NAME,
+
+  WPP_SESSION_NAME = "sat-assistencia",
   POLL_INTERVAL_MS = 5000,
-  WPP_DATA_PATH = './.wwebjs_auth',
-  WHATS_NOTIFY_URL, // 👈 opcional: URL para notificar o server e acionar o SSE
+
+  // Use volume na Railway
+  WPP_DATA_PATH = process.env.WPP_DATA_PATH || "/data/wwebjs",
+  UPLOAD_DIR = process.env.UPLOAD_DIR || "/data/uploads/os",
+
+  WHATS_NOTIFY_URL, // opcional: URL de notify SSE
+  PUPPETEER_EXECUTABLE_PATH, // opcional se chromium do sistema
 } = process.env;
 
+/* ========= PREPARE DIRECTÓRIOS ========= */
+for (const d of [WPP_DATA_PATH, UPLOAD_DIR, path.dirname(UPLOAD_DIR)]) {
+  try {
+    fs.mkdirSync(d, { recursive: true });
+  } catch (e) {
+    console.error("[WPP] ERRO criando diretório", d, ":", e.message);
+  }
+}
 
-console.log('[WPP] DATA PATH =', WPP_DATA_PATH, ' | SESSION =', WPP_SESSION_NAME);
+console.log("[WPP] DATA PATH =", WPP_DATA_PATH, "| SESSION =", WPP_SESSION_NAME);
 try {
-  const testDir = WPP_DATA_PATH;
-  fs.mkdirSync(testDir, { recursive: true });
-  console.log('[WPP] Conteúdo inicial de', testDir, ':', fs.readdirSync(testDir));
+  console.log("[WPP] Conteúdo inicial de", WPP_DATA_PATH, ":", fs.readdirSync(WPP_DATA_PATH));
 } catch (e) {
-  console.error('[WPP] ERRO verificando diretório:', e.message);
+  console.error("[WPP] ERRO verificando diretório:", e.message);
 }
 
 /* ========= Mensagens por LOCAL ========= */
 const MESSAGES_BY_LOCAL = new Map([
-  ['LOC001', '✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento.'],
-  ['LOC002', '🔧 Seu equipamento já está na mesa do técnico para diagnóstico.'],
-  ['LOC003', '📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo.'],
-  ['LOC004', '📦 Estamos aguardando a chegada das peças.'],
-  ['LOC005', '🛠️ Seu equipamento está em *reparo* neste momento.'],
-  ['LOC006', '🧪 Estamos *testando* seu equipamento para garantir que ficou 100%.'],
-  ['LOC007', '📦 Seu equipamento está *pronto para retirada*.'],
-  ['LOC008', '✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!'],
+  ["LOC001","✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento."],
+  ["LOC002","🔧 Seu equipamento já está na mesa do técnico para diagnóstico."],
+  ["LOC003","📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo."],
+  ["LOC004","📦 Estamos aguardando a chegada das peças."],
+  ["LOC005","🛠️ Seu equipamento está em *reparo* neste momento."],
+  ["LOC006","🧪 Estamos *testando* seu equipamento para garantir que ficou 100%."],
+  ["LOC007","📦 Seu equipamento está *pronto para retirada*."],
+  ["LOC008","✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!"],
 ]);
 
 /* ========= Mensagens extras por STATUS ========= */
 const MESSAGES_BY_STATUS = new Map([
-  ['Com Cliente', '📦 Seu equipamento foi entregue/retirado. Obrigado por escolher a Eletrotek!'],
+  ["Com Cliente","📦 Seu equipamento foi entregue/retirado. Obrigado por escolher a Eletrotek!"],
 ]);
 
 /* ========= Rotas extras via .env ========= */
-const envList = (k) => (process.env[k] || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
+const envList = (k) =>
+  (process.env[k] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 const EXTRA_ROUTES = new Map([
-  ['LOC001', envList('ROUTE_LOC001_NUMBERS')],
-  ['LOC002', envList('ROUTE_LOC002_NUMBERS')],
-  ['LOC003', envList('ROUTE_LOC003_NUMBERS')],
-  ['LOC004', envList('ROUTE_LOC004_NUMBERS')],
-  ['LOC005', envList('ROUTE_LOC005_NUMBERS')],
-  ['LOC006', envList('ROUTE_LOC006_NUMBERS')],
-  ['LOC007', envList('ROUTE_LOC007_NUMBERS')],
-  ['LOC008', envList('ROUTE_LOC008_NUMBERS')],
+  ["LOC001", envList("ROUTE_LOC001_NUMBERS")],
+  ["LOC002", envList("ROUTE_LOC002_NUMBERS")],
+  ["LOC003", envList("ROUTE_LOC003_NUMBERS")],
+  ["LOC004", envList("ROUTE_LOC004_NUMBERS")],
+  ["LOC005", envList("ROUTE_LOC005_NUMBERS")],
+  ["LOC006", envList("ROUTE_LOC006_NUMBERS")],
+  ["LOC007", envList("ROUTE_LOC007_NUMBERS")],
+  ["LOC008", envList("ROUTE_LOC008_NUMBERS")],
 ]);
 
 /* ========= MYSQL ========= */
@@ -88,7 +108,7 @@ async function getPool() {
       waitForConnections: true,
       connectionLimit: 10,
       dateStrings: true,
-      charset: 'utf8mb4',
+      charset: "utf8mb4",
     });
   }
   return pool;
@@ -102,7 +122,19 @@ const client = new Client({
   }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+    executablePath: PUPPETEER_EXECUTABLE_PATH || undefined, // se setado no ENV
+  },
+  // Corrige "versão do WhatsApp Web" incompatível
+  webVersionCache: {
+    type: "remote",
+    remotePath:
+      "https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/web-version.json",
   },
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
@@ -110,16 +142,18 @@ const client = new Client({
   qrMaxRetries: 0,
 });
 
-// Base de uploads (igual ao server): se UPLOAD_DIR=/data/uploads/os → base=/data
-const uploadsRoot = process.env.UPLOAD_DIR
-  ? path.resolve(process.env.UPLOAD_DIR)
-  : path.join(__dirname, '..', 'uploads', 'os');
-const uploadsBase = path.dirname(uploadsRoot);
-const QR_PNG_PATH = path.join(uploadsBase, 'whatsapp-qr.png');
+// Colocamos o QR PNG na BASE do uploads (não dentro de /os) para facilitar servir
+const uploadsRoot = path.resolve(UPLOAD_DIR);
+const uploadsBase = path.dirname(uploadsRoot); // se UPLOAD_DIR=/data/uploads/os → uploadsBase=/data/uploads
+const QR_PNG_PATH = path.join(uploadsBase, "whatsapp-qr.png");
 
-client.on('qr', async (qr) => {
+/* ========= LOGS ÚTEIS ========= */
+client.on("change_state", (s) => console.log("[whats] state =", s));
+client.on("loading_screen", (pct, msg) => console.log("[whats] loading", pct, msg));
+
+client.on("qr", async (qr) => {
   console.clear();
-  console.log('📲 Escaneie o QR abaixo para conectar ao WhatsApp:');
+  console.log("📲 Escaneie o QR abaixo para conectar ao WhatsApp:");
   qrcodeTerminal.generate(qr, { small: true });
   try {
     const dir = path.dirname(QR_PNG_PATH);
@@ -127,45 +161,55 @@ client.on('qr', async (qr) => {
     await qrcodeImage.toFile(QR_PNG_PATH, qr, { width: 320, margin: 2 });
     console.log(`QR salvo em: ${QR_PNG_PATH}`);
   } catch (e) {
-    console.error('Falha ao salvar QR:', e?.message || e);
+    console.error("Falha ao salvar QR:", e?.message || e);
   }
 });
 
-client.on('ready', async () => {
-  console.log('✅ WhatsApp pronto');
+client.on("ready", async () => {
+  console.log("✅ WhatsApp pronto");
   await bootstrap();
   loop();
 });
 
-client.on('auth_failure', (m) => console.error('[whats] auth_failure', m));
-client.on('disconnected', (r) => {
-  console.warn('[whats] disconnected', r);
-  client.initialize();
+client.on("auth_failure", (m) => console.error("[whats] auth_failure", m));
+
+let reconnectDelay = 2000; // backoff exponencial simples
+client.on("disconnected", (r) => {
+  console.warn("[whats] disconnected", r);
+  setTimeout(() => {
+    console.log("[whats] tentando reconectar...");
+    client.initialize();
+    reconnectDelay = Math.min(reconnectDelay * 2, 60000);
+  }, reconnectDelay);
 });
 
 client.initialize();
 
 /* ========= STATE ========= */
-const STATE_FILE = path.join(__dirname, '..', '.bot_state.json');
+const STATE_FILE = path.join(__dirname, "..", ".bot_state.json");
 const loadState = () => {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
-  catch { return { lastSeen: {}, lastStatus: {}, bootstrapped: false }; }
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+  } catch {
+    return { lastSeen: {}, lastStatus: {}, bootstrapped: false };
+  }
 };
-const saveState = (s) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+const saveState = (s) =>
+  fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 let state = loadState();
 
 /* ========= HELPERS ========= */
-const fmt = (d) => d ? new Date(d).toLocaleString('pt-BR') : '-';
+const fmt = (d) => (d ? new Date(d).toLocaleString("pt-BR") : "-");
 
 function normalizeBR(phoneRaw) {
   if (!phoneRaw) return null;
-  let d = String(phoneRaw).replace(/\D/g, '');
-  d = d.replace(/^0+/, '');
-  if (d.startsWith('55')) {
+  let d = String(phoneRaw).replace(/\D/g, "");
+  d = d.replace(/^0+/, "");
+  if (d.startsWith("55")) {
     if (d.length >= 12 && d.length <= 13) return d;
     return d.slice(0, 13);
   }
-  if (d.length === 10 || d.length === 11) return '55' + d;
+  if (d.length === 10 || d.length === 11) return "55" + d;
   return null;
 }
 
@@ -185,26 +229,23 @@ async function logEnvio(p, osId, idLocal, destino, mensagem) {
     `);
     await p.query(
       `INSERT INTO ${SCHEMA}.whats_envios (id_os, id_local, destino, mensagem) VALUES (?, ?, ?, ?);`,
-      [osId, idLocal, destino, mensagem]
+      [osId, idLocal, destino, mensagem],
     );
   } catch (e) {
-    console.warn('[whats] Falha ao logar envio:', e?.message || e);
+    console.warn("[whats] Falha ao logar envio:", e?.message || e);
   }
 }
 
 /* ========= 🔔 Notificação do front (SSE) ========= */
-/* POST no server para emitir no /api/whats/events.
-   Se WHATS_NOTIFY_URL não estiver setada, usa localhost:3001 */
-const NOTIFY_URL = WHATS_NOTIFY_URL || 'http://localhost:3001/api/whats/notify';
+const NOTIFY_URL = WHATS_NOTIFY_URL || "http://localhost:3001/api/whats/notify";
 
 async function notifyFront({ id_os, id_local, to, text }) {
   try {
-    // Node 18+ tem fetch nativo
     await fetch(NOTIFY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        type: 'whats:sent',
+        type: "whats:sent",
         id_os,
         id_local,
         to,
@@ -212,7 +253,9 @@ async function notifyFront({ id_os, id_local, to, text }) {
         at: new Date().toISOString(),
       }),
     }).catch(() => {}); // fire-and-forget
-  } catch (_) { /* silencioso */ }
+  } catch (_) {
+    /* silencioso */
+  }
 }
 
 /** Resolve números para JIDs válidos (somente usuários registrados). */
@@ -240,13 +283,16 @@ async function sendToValidated(numbers, text, osId, idLocal) {
   for (const t of targets) {
     try {
       await client.sendMessage(t.jid, text);
-      console.log(`[whats] → enviado p/ ${t.num} (jid=${t.jid}) | OS ${osId} | ${idLocal}`);
+      console.log(
+        `[whats] → enviado p/ ${t.num} (jid=${t.jid}) | OS ${osId} | ${idLocal}`,
+      );
       await logEnvio(p, osId, idLocal, t.jid, text);
-
-      // 🔔 avisa o servidor para disparar SSE (toast no front)
       notifyFront({ id_os: osId, id_local: idLocal, to: t.num, text });
     } catch (e) {
-      console.error(`[whats] Falha ao enviar p/ ${t.num} (jid=${t.jid}):`, e?.message || e);
+      console.error(
+        `[whats] Falha ao enviar p/ ${t.num} (jid=${t.jid}):`,
+        e?.message || e,
+      );
     }
   }
 }
@@ -255,7 +301,9 @@ async function sendToValidated(numbers, text, osId, idLocal) {
 async function bootstrap() {
   const p = await getPool();
   if (state.bootstrapped) return;
-  const [rows] = await p.query(`SELECT ${OS_PK} AS id_os, ${OS_ID_LOCAL} AS id_local, id_status_os FROM ${OS_TABLE}`);
+  const [rows] = await p.query(
+    `SELECT ${OS_PK} AS id_os, ${OS_ID_LOCAL} AS id_local, id_status_os FROM ${OS_TABLE}`,
+  );
   for (const r of rows) {
     state.lastSeen[r.id_os] = r.id_local;
     state.lastStatus[r.id_os] = r.id_status_os ?? null;
@@ -270,8 +318,8 @@ function messageForLocal(idLocal, os) {
   return (
     MESSAGES_BY_LOCAL.get(idLocal) ||
     `🛠️ Sua OS #${os.id_os} foi movida para *${idLocal}*.\n` +
-    `Problema: ${os.descricao_problema || '-'}\n` +
-    `Criada: ${fmt(os.data_criacao)} | Atualizada: ${fmt(os.data_atualizacao)}`
+      `Problema: ${os.descricao_problema || "-"}\n` +
+      `Criada: ${fmt(os.data_criacao)} | Atualizada: ${fmt(os.data_atualizacao)}`
   );
 }
 
@@ -322,7 +370,8 @@ async function checkOnce() {
       state.lastSeen[os.id_os] = os.id_local;
       state.lastStatus[os.id_os] = os.id_status_os;
       saveState(state);
-      const texto = MESSAGES_BY_LOCAL.get('LOC001') || messageForLocal(os.id_local, os);
+      const texto =
+        MESSAGES_BY_LOCAL.get("LOC001") || messageForLocal(os.id_local, os);
       await sendToValidated(to, texto, os.id_os, os.id_local);
       continue;
     }
@@ -350,6 +399,9 @@ async function checkOnce() {
 }
 
 function loop() {
-  checkOnce().catch(e => console.error('[whats] Loop error:', e));
-  setInterval(() => checkOnce().catch(e => console.error('[whats] Loop error:', e)), Number(POLL_INTERVAL_MS));
+  checkOnce().catch((e) => console.error("[whats] Loop error:", e));
+  setInterval(
+    () => checkOnce().catch((e) => console.error("[whats] Loop error:", e)),
+    Number(POLL_INTERVAL_MS),
+  );
 }
