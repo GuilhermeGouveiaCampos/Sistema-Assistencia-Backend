@@ -280,6 +280,21 @@ app.get("/debug/wpp", (_req, res) => {
     res.status(500).json({ base, error: e.message });
   }
 });
+// --- INICIAR O BOT DO WHATSAPP (precisa disso!) ---
+if (process.env.ENABLE_WPP === "1") {
+  console.log("🤖 Inicializando bot do WhatsApp...");
+  require("./utils/whats-bot");
+}
+app.get("/api/wpp/qr-exists", (_req, res) => {
+  const uploadsRoot = process.env.UPLOAD_DIR
+    ? path.resolve(process.env.UPLOAD_DIR) // /data/uploads
+    : path.join(__dirname, "uploads", "os");
+  const uploadsBase = path.dirname(uploadsRoot); // /data
+  const qrPath = path.join(uploadsBase, "whatsapp-qr.png");
+  const exists = fs.existsSync(qrPath);
+  res.json({ uploadsRoot, uploadsBase, qrPath, exists });
+});
+
 
 /* ===========================
    Sobe servidor
