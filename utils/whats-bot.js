@@ -36,15 +36,23 @@ const {
   WPP_SESSION_NAME = "sat-assistencia",
   POLL_INTERVAL_MS = 5000,
 
-  // Use volume na Railway
-  WPP_DATA_PATH = process.env.WPP_DATA_PATH || "/data/wwebjs",
+  // >>> unificado com o que usamos na Railway/Server
+  WPP_DATA_PATH = process.env.WPP_DATA_PATH || "/data/.wwebjs_auth",
   UPLOAD_DIR = process.env.UPLOAD_DIR || "/data/uploads/os",
+
+  // força sessão nova no boot (apaga pasta session-<nome>)
+  WPP_FORCE_NEW_SESSION = "0",
 
   WHATS_NOTIFY_URL, // opcional: URL de notify SSE
   PUPPETEER_EXECUTABLE_PATH, // opcional se chromium do sistema
+
+  // modo sem DB (para testes locais/diagnóstico)
+  WHATS_DISABLE_DB = "0",
 } = process.env;
 
-/* ========= PREPARE DIRECTÓRIOS ========= */
+const DISABLE_DB = WHATS_DISABLE_DB === "1";
+
+/* ========= PREPARE DIRETÓRIOS ========= */
 for (const d of [WPP_DATA_PATH, UPLOAD_DIR, path.dirname(UPLOAD_DIR)]) {
   try {
     fs.mkdirSync(d, { recursive: true });
@@ -53,28 +61,52 @@ for (const d of [WPP_DATA_PATH, UPLOAD_DIR, path.dirname(UPLOAD_DIR)]) {
   }
 }
 
-console.log("[WPP] DATA PATH =", WPP_DATA_PATH, "| SESSION =", WPP_SESSION_NAME);
+console.log(
+  "[WPP] DATA PATH =",
+  WPP_DATA_PATH,
+  "| SESSION =",
+  WPP_SESSION_NAME,
+  "| DISABLE_DB =",
+  DISABLE_DB ? "ON" : "OFF",
+);
+
+// força sessão nova opcionalmente (útil para “QR muito antigo” na nuvem)
+if (WPP_FORCE_NEW_SESSION === "1") {
+  try {
+    const sessionDir = path.join(WPP_DATA_PATH, `session-${WPP_SESSION_NAME}`);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    console.log("[WPP] Sessão antiga removida (WPP_FORCE_NEW_SESSION=1):", sessionDir);
+  } catch (e) {
+    console.warn("[WPP] Falha ao remover sessão antiga:", e.message);
+  }
+}
+
 try {
-  console.log("[WPP] Conteúdo inicial de", WPP_DATA_PATH, ":", fs.readdirSync(WPP_DATA_PATH));
+  console.log(
+    "[WPP] Conteúdo inicial de",
+    WPP_DATA_PATH,
+    ":",
+    fs.readdirSync(WPP_DATA_PATH),
+  );
 } catch (e) {
   console.error("[WPP] ERRO verificando diretório:", e.message);
 }
 
 /* ========= Mensagens por LOCAL ========= */
 const MESSAGES_BY_LOCAL = new Map([
-  ["LOC001","✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento."],
-  ["LOC002","🔧 Seu equipamento já está na mesa do técnico para diagnóstico."],
-  ["LOC003","📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo."],
-  ["LOC004","📦 Estamos aguardando a chegada das peças."],
-  ["LOC005","🛠️ Seu equipamento está em *reparo* neste momento."],
-  ["LOC006","🧪 Estamos *testando* seu equipamento para garantir que ficou 100%."],
-  ["LOC007","📦 Seu equipamento está *pronto para retirada*."],
-  ["LOC008","✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!"],
+  ["LOC001", "✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento."],
+  ["LOC002", "🔧 Seu equipamento já está na mesa do técnico para diagnóstico."],
+  ["LOC003", "📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo."],
+  ["LOC004", "📦 Estamos aguardando a chegada das peças."],
+  ["LOC005", "🛠️ Seu equipamento está em *reparo* neste momento."],
+  ["LOC006", "🧪 Estamos *testando* seu equipamento para garantir que ficou 100%."],
+  ["LOC007", "📦 Seu equipamento está *pronto para retirada*."],
+  ["LOC008", "✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!"],
 ]);
 
 /* ========= Mensagens extras por STATUS ========= */
 const MESSAGES_BY_STATUS = new Map([
-  ["Com Cliente","📦 Seu equipamento foi entregue/retirado. Obrigado por escolher a Eletrotek!"],
+  ["Com Cliente", "📦 Seu equipamento foi entregue/retirado. Obrigado por escolher a Eletrotek!"],
 ]);
 
 /* ========= Rotas extras via .env ========= */
@@ -98,6 +130,9 @@ const EXTRA_ROUTES = new Map([
 /* ========= MYSQL ========= */
 let pool;
 async function getPool() {
+  if (DISABLE_DB) {
+    throw new Error("DB desabilitado por WHATS_DISABLE_DB=1");
+  }
   if (!pool) {
     pool = mysql.createPool({
       host: DB_HOST,
@@ -142,14 +177,14 @@ const client = new Client({
   qrMaxRetries: 0,
 });
 
-// Colocamos o QR PNG na BASE do uploads (não dentro de /os) para facilitar servir
+// Colocamos o QR PNG na BASE do uploads para servir em /uploads/whatsapp-qr.png
 const uploadsRoot = path.resolve(UPLOAD_DIR);
-const uploadsBase = path.dirname(uploadsRoot); // se UPLOAD_DIR=/data/uploads/os → uploadsBase=/data/uploads
+const uploadsBase = path.dirname(uploadsRoot); // UPLOAD_DIR=/data/uploads/os → uploadsBase=/data/uploads
 const QR_PNG_PATH = path.join(uploadsBase, "whatsapp-qr.png");
 
 /* ========= LOGS ÚTEIS ========= */
 client.on("change_state", (s) => console.log("[whats] state =", s));
-client.on("loading_screen", (pct, msg) => console.log("[whats] loading", pct, msg));
+client.on("loading_screen", (pct, msg) => console.log("[whats] loading", pct, msg || ""));
 
 client.on("qr", async (qr) => {
   console.clear();
@@ -167,8 +202,16 @@ client.on("qr", async (qr) => {
 
 client.on("ready", async () => {
   console.log("✅ WhatsApp pronto");
-  await bootstrap();
-  loop();
+  if (DISABLE_DB) {
+    console.log("⚠️ WHATS_DISABLE_DB=1 → pulando bootstrap/loop (modo sem DB).");
+    return;
+  }
+  try {
+    await bootstrap();
+    loop();
+  } catch (e) {
+    console.error("bootstrap/loop falhou, WhatsApp segue conectado:", e?.message || e);
+  }
 });
 
 client.on("auth_failure", (m) => console.error("[whats] auth_failure", m));
@@ -214,6 +257,7 @@ function normalizeBR(phoneRaw) {
 }
 
 async function logEnvio(p, osId, idLocal, destino, mensagem) {
+  if (DISABLE_DB) return; // em modo sem DB, só pula
   try {
     await p.query(`
       CREATE TABLE IF NOT EXISTS ${SCHEMA}.whats_envios (
@@ -278,7 +322,7 @@ async function resolveJids(numbers) {
 }
 
 async function sendToValidated(numbers, text, osId, idLocal) {
-  const p = await getPool();
+  const p = DISABLE_DB ? null : await getPool();
   const targets = await resolveJids(numbers);
   for (const t of targets) {
     try {
@@ -286,7 +330,7 @@ async function sendToValidated(numbers, text, osId, idLocal) {
       console.log(
         `[whats] → enviado p/ ${t.num} (jid=${t.jid}) | OS ${osId} | ${idLocal}`,
       );
-      await logEnvio(p, osId, idLocal, t.jid, text);
+      if (!DISABLE_DB) await logEnvio(p, osId, idLocal, t.jid, text);
       notifyFront({ id_os: osId, id_local: idLocal, to: t.num, text });
     } catch (e) {
       console.error(
@@ -299,6 +343,7 @@ async function sendToValidated(numbers, text, osId, idLocal) {
 
 /* ========= BOOTSTRAP ========= */
 async function bootstrap() {
+  if (DISABLE_DB) return;
   const p = await getPool();
   if (state.bootstrapped) return;
   const [rows] = await p.query(
@@ -324,6 +369,7 @@ function messageForLocal(idLocal, os) {
 }
 
 async function checkOnce() {
+  if (DISABLE_DB) return;
   const p = await getPool();
   const [rows] = await p.query(`
     SELECT
@@ -399,6 +445,7 @@ async function checkOnce() {
 }
 
 function loop() {
+  if (DISABLE_DB) return;
   checkOnce().catch((e) => console.error("[whats] Loop error:", e));
   setInterval(
     () => checkOnce().catch((e) => console.error("[whats] Loop error:", e)),

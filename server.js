@@ -2,15 +2,17 @@
 
 require("dotenv").config();
 
+const path = require("path");
+const fs = require("fs");
+const { EventEmitter } = require("events");
+
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 const helmet = require("helmet");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 const mysql = require("mysql2");
-const fs = require("fs");
 
 const app = express();
 
@@ -18,7 +20,6 @@ const app = express();
    🔔 Event Bus (SSE p/ WhatsApp)
    =========================== */
 // no topo
-const { EventEmitter } = require("events");
 const eventBus = new EventEmitter();
 app.set("eventBus", eventBus);
 
@@ -30,7 +31,7 @@ const COMMIT =
   process.env.RAILWAY_GIT_COMMIT_SHA ||
   "local";
 app.get("/version", (_req, res) =>
-  res.json({ commit: COMMIT, time: new Date().toISOString() })
+  res.json({ commit: COMMIT, time: new Date().toISOString() }),
 );
 
 /* ===========================
@@ -39,11 +40,13 @@ app.get("/version", (_req, res) =>
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  })
+  }),
 );
 app.use(compression());
 app.use(express.json({ limit: "2mb" }));
-app.use(morgan(":method :url :status :res[content-length] - :response-time ms"));
+app.use(
+  morgan(":method :url :status :res[content-length] - :response-time ms"),
+);
 
 app.set("trust proxy", 1);
 
@@ -89,7 +92,7 @@ app.use(
       "x-leitor-key",
     ],
     optionsSuccessStatus: 204,
-  })
+  }),
 );
 app.options("*", cors());
 
@@ -97,9 +100,9 @@ app.options("*", cors());
    Uploads / arquivos estáticos
    =========================== */
 const uploadsRoot = process.env.UPLOAD_DIR
-  ? path.resolve(process.env.UPLOAD_DIR)                  // ex: /data/uploads/os
+  ? path.resolve(process.env.UPLOAD_DIR) // ex: /data/uploads/os
   : path.join(__dirname, "uploads", "os");
-const uploadsBase = path.dirname(uploadsRoot);            // ex: /data/uploads  (ou /app/uploads)
+const uploadsBase = path.dirname(uploadsRoot); // ex: /data/uploads  (ou /app/uploads)
 
 try {
   fs.mkdirSync(uploadsRoot, { recursive: true });
@@ -114,20 +117,36 @@ app.use("/uploads/os", express.static(uploadsRoot, { maxAge: "7d" }));
 app.use("/uploads", express.static(uploadsBase, { maxAge: "7d" }));
 
 app.get("/whatsapp-qr", (_req, res) => {
-  const fp = path.join(uploadsBase, "whatsapp-qr.png");  // <— ajustado
+  const fp = path.join(uploadsBase, "whatsapp-qr.png"); // <— ajustado
   if (fs.existsSync(fp)) return res.sendFile(fp);
   return res.status(404).json({ erro: "QR ainda não foi gerado." });
 });
 
 app.get("/whatsapp-qr-live", (_req, res) => {
   const v = Date.now();
-  res.type("html").send(`
-    <!doctype html><meta charset="utf-8" />
-    <title>WhatsApp QR</title>
-    <style>body{display:grid;place-items:center;height:100vh;font-family:sans-serif}img{max-width:90vmin}</style>
-    <h1>Escaneie o QR do WhatsApp</h1>
-    <img src="/uploads/whatsapp-qr.png?v=${v}" onerror="this.src='/uploads/whatsapp-qr.png?v='+Date.now()" />
-    <script>setInterval(()=>{const img=document.querySelector('img');img.src='/uploads/whatsapp-qr.png?v='+Date.now()},15000)</script>
+  res.type("html").send(`<!doctype html>
+<meta charset="utf-8" />
+<title>WhatsApp QR</title>
+<style>
+  body{display:grid;place-items:center;height:100vh;font-family:sans-serif}
+  img{max-width:90vmin}
+</style>
+<h1>Escaneie o QR do WhatsApp</h1>
+<img id="qr" src="/uploads/whatsapp-qr.png?v=${v}" alt="QR Code do WhatsApp" />
+<script src="/qr-refresh.js"></script>
+`);
+});
+
+// JS externo para atualizar a imagem sem inline script/handlers
+app.get("/qr-refresh.js", (_req, res) => {
+  res.type("application/javascript").send(`
+    (function(){
+      var img = document.getElementById('qr');
+      function refresh(){ img.src = '/uploads/whatsapp-qr.png?v=' + Date.now(); }
+      setInterval(refresh, 15000);
+      // primeira tentativa de recarregar depois de 2s para cobrir o caso 404 inicial
+      setTimeout(refresh, 2000);
+    })();
   `);
 });
 
@@ -161,10 +180,10 @@ app.set("db", db);
    Health checks
    =========================== */
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, env: process.env.NODE_ENV || "dev" })
+  res.json({ ok: true, env: process.env.NODE_ENV || "dev" }),
 );
 app.get("/api/teste", (_req, res) =>
-  res.json({ mensagem: "API funcionando!" })
+  res.json({ mensagem: "API funcionando!" }),
 );
 
 /* ===========================
@@ -208,7 +227,7 @@ app.get("/api/whats/events", (req, res) => {
    =========================== */
 app.use("/api/dashboard", require("./routes/dashboard"));
 app.use("/api/ordens/inativas", require("./routes/ordensInativas"));
-
+// 🔧 CORREÇÃO prévia: removida a segunda declaração de `app` que causava o erro
 const ordensRouter = require("./routes/ordens");
 app.use("/api/ordens", ordensRouter);
 app.use("/api/ordemservico", ordensRouter);
@@ -225,8 +244,16 @@ app.use("/api/ordens-consulta", require("./routes/ordensConsulta"));
 app.use("/api/rfid", require("./routes/leitores"));
 app.use("/api/ardloc", require("./routes/ardloc"));
 const relatorios = require("./routes/relatorios");
-console.log("Tipo relatorios =", typeof relatorios, "keys:", Object.keys(relatorios));
-app.use("/api/relatorios", relatorios.default || relatorios.router || relatorios);
+console.log(
+  "Tipo relatorios =",
+  typeof relatorios,
+  "keys:",
+  Object.keys(relatorios),
+);
+app.use(
+  "/api/relatorios",
+  relatorios.default || relatorios.router || relatorios,
+);
 
 /* ===========================
    Tratamento de erros
@@ -243,17 +270,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ erro: "Erro interno no servidor." });
 });
 
-app.get('/debug/wpp', (_req, res) => {
-  const base = process.env.WPP_DATA_PATH || '/data/.wwebjs_auth';
+app.get("/debug/wpp", (_req, res) => {
+  const base = process.env.WPP_DATA_PATH || "/data/.wwebjs_auth";
   try {
     const list = fs.readdirSync(base);
-    const sessions = list.filter(n => n.startsWith('session-'));
+    const sessions = list.filter((n) => n.startsWith("session-"));
     res.json({ base, list, sessions });
   } catch (e) {
     res.status(500).json({ base, error: e.message });
   }
 });
-
 
 /* ===========================
    Sobe servidor
@@ -261,5 +287,7 @@ app.get('/debug/wpp', (_req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor ouvindo em 0.0.0.0:${PORT}`);
-  console.log("QR do WhatsApp (se gerado): /whatsapp-qr  ou  /uploads/whatsapp-qr.png");
+  console.log(
+    "QR do WhatsApp (se gerado): /whatsapp-qr  ou  /uploads/whatsapp-qr.png",
+  );
 });
