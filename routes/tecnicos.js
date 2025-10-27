@@ -1,12 +1,12 @@
 // backend/routes/tecnicos.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const db = require('../db'); // ✅ usa o pool PROMISE, igual outras rotas
+const db = require("../db");
 
 // 🔍 Listar técnicos ativos (com filtros opcionais nome/cpf)
-router.get('/', async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const { nome = '', cpf = '' } = req.query;
+    const { nome = "", cpf = "" } = req.query;
 
     let sql = `
       SELECT 
@@ -28,8 +28,8 @@ router.get('/', async (req, res) => {
       params.push(`%${nome}%`);
     }
     if (cpf) {
-      const onlyDigits = String(cpf).replace(/\D/g, '');
-      sql += ` AND (REPLACE(u.cpf, '.', '') LIKE ? OR REPLACE(REPLACE(t.telefone, '(', ''), ')', '') LIKE ?)`;
+      const onlyDigits = String(cpf).replace(/\D/g, "");
+      sql += ` AND (REPLACE(u.cpf, '.', '') LIKE ? OR REPLACE(REPLACE(REPLACE(t.telefone, '(', ''), ')', ''), '-', '') LIKE ?)`;
       params.push(`%${onlyDigits}%`, `%${onlyDigits}%`);
     }
 
@@ -38,13 +38,13 @@ router.get('/', async (req, res) => {
     const [rows] = await db.query(sql, params);
     res.json(rows);
   } catch (err) {
-    console.error('❌ Erro ao listar técnicos:', err);
-    res.status(500).json({ erro: 'Erro ao listar técnicos.' });
+    console.error("❌ Erro ao listar técnicos:", err);
+    res.status(500).json({ erro: "Erro ao listar técnicos." });
   }
 });
 
 // 🔍 Listar técnicos inativos
-router.get('/inativos', async (_req, res) => {
+router.get("/inativos", async (_req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT 
@@ -62,13 +62,13 @@ router.get('/inativos', async (_req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error('❌ Erro ao listar técnicos inativos:', err);
-    res.status(500).json({ erro: 'Erro ao listar técnicos inativos.' });
+    console.error("❌ Erro ao listar técnicos inativos:", err);
+    res.status(500).json({ erro: "Erro ao listar técnicos inativos." });
   }
 });
 
 // 🔎 Atribuições por técnico (OS ativas)
-router.get('/atribuicoes', async (_req, res) => {
+router.get("/atribuicoes", async (_req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT
@@ -101,82 +101,159 @@ router.get('/atribuicoes', async (_req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error('❌ Erro em /api/tecnicos/atribuicoes:', err);
-    res.status(500).json({ erro: 'Erro ao buscar atribuições dos técnicos.' });
+    console.error("❌ Erro em /api/tecnicos/atribuicoes:", err);
+    res.status(500).json({ erro: "Erro ao buscar atribuições dos técnicos." });
   }
 });
 
 // ➕ Cadastrar técnico
-router.post('/', async (req, res) => {
+router.post("/", async (req, res) => {
   const { nome, especializacao, telefone, id_usuario } = req.body;
 
   if (!nome || !especializacao || !telefone || !id_usuario) {
-    return res.status(400).json({ erro: 'Todos os campos são obrigatórios.' });
+    return res.status(400).json({ erro: "Todos os campos são obrigatórios." });
   }
 
   try {
+    // garante que o usuário existe
+    const [[u]] = await db.query(
+      "SELECT id_usuario FROM usuario WHERE id_usuario = ? LIMIT 1",
+      [id_usuario]
+    );
+    if (!u) return res.status(400).json({ erro: "Usuário vinculado não encontrado." });
+
     const [result] = await db.query(
       `INSERT INTO tecnico (nome, especializacao, telefone, status, id_usuario) 
        VALUES (?, ?, ?, 'ativo', ?)`,
-      [nome, especializacao, telefone, id_usuario]
+      [nome, especializacao, telefone, id_usuario],
     );
-    res.status(201).json({ mensagem: 'Técnico cadastrado com sucesso.', id_tecnico: result.insertId });
+    res.status(201).json({
+      mensagem: "Técnico cadastrado com sucesso.",
+      id_tecnico: result.insertId,
+    });
   } catch (err) {
-    console.error('❌ Erro ao cadastrar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao cadastrar técnico.' });
+    console.error("❌ Erro ao cadastrar técnico:", err);
+    res.status(500).json({ erro: "Erro ao cadastrar técnico." });
   }
 });
 
-// 📝 Atualizar técnico
-router.put('/:id', async (req, res) => {
-  const { id } = req.params;
-  const { nome, especializacao, telefone } = req.body;
+// 📝 Atualizar técnico (ACEITA UPDATE PARCIAL) + opcional atualizar CPF do usuário vinculado
+router.put("/:id", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!/^\d+$/.test(id)) return res.status(400).json({ erro: "ID inválido" });
 
-  if (!nome || !especializacao || !telefone) {
-    return res.status(400).json({ erro: 'Todos os campos são obrigatórios.' });
+  const body = req.body || {};
+  const nome           = (body.nome ?? "").toString().trim();
+  const especializacao = (body.especializacao ?? "").toString().trim();
+  const telefone       = (body.telefone ?? "").toString().trim();
+  const cpf            = (body.cpf ?? "").toString().trim(); // opcional (na tabela usuario)
+
+  // nada para atualizar?
+  if (![nome, especializacao, telefone, cpf].some(v => v.length)) {
+    return res.status(400).json({ erro: "Nenhum campo para atualizar" });
   }
 
   try {
-    const [result] = await db.query(
-      `UPDATE tecnico SET nome = ?, especializacao = ?, telefone = ? WHERE id_tecnico = ?`,
-      [nome, especializacao, telefone, id]
+    // existe?
+    const [[tec]] = await db.query(
+      "SELECT id_tecnico, id_usuario FROM tecnico WHERE id_tecnico = ? LIMIT 1",
+      [id]
     );
-    if (!result.affectedRows) return res.status(404).json({ erro: 'Técnico não encontrado.' });
-    res.json({ mensagem: 'Técnico atualizado com sucesso.' });
+    if (!tec) return res.status(404).json({ erro: "Técnico não encontrado" });
+
+    // validações leves
+    if (telefone && telefone.replace(/\D/g, "").length < 10) {
+      return res.status(400).json({ erro: "Telefone inválido" });
+    }
+    if (cpf && !/^\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/.test(cpf)) {
+      return res.status(400).json({ erro: "CPF inválido" });
+    }
+    // se quiser impedir CPF duplicado em outro usuário, descomente:
+    // if (cpf) {
+    //   const [[dup]] = await db.query(
+    //     "SELECT id_usuario FROM usuario WHERE cpf = ? AND id_usuario <> ? LIMIT 1",
+    //     [cpf, tec.id_usuario || 0]
+    //   );
+    //   if (dup) return res.status(400).json({ erro: "CPF já cadastrado para outro usuário" });
+    // }
+
+    // monta SET dinâmico
+    const sets = [];
+    const vals = [];
+    if (nome)           { sets.push("nome = ?"); vals.push(nome); }
+    if (especializacao) { sets.push("especializacao = ?"); vals.push(especializacao); }
+    if (telefone)       { sets.push("telefone = ?"); vals.push(telefone); }
+    sets.push("data_atualizacao = NOW()");
+
+    if (sets.length > 0) {
+      const sql = `UPDATE tecnico SET ${sets.join(", ")} WHERE id_tecnico = ?`;
+      vals.push(id);
+      const [upd] = await db.query(sql, vals);
+      if (upd.affectedRows === 0) {
+        return res.status(404).json({ erro: "Técnico não encontrado" });
+      }
+    }
+
+    // atualizar CPF do usuário vinculado (opcional)
+    if (cpf && tec.id_usuario) {
+      await db.query("UPDATE usuario SET cpf = ? WHERE id_usuario = ?", [
+        cpf,
+        tec.id_usuario,
+      ]);
+    }
+
+    return res.json({ mensagem: "Técnico atualizado com sucesso" });
   } catch (err) {
-    console.error('❌ Erro ao atualizar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao atualizar técnico.' });
+    console.error("💥 PUT /api/tecnicos/:id error:", {
+      message: err?.message,
+      code: err?.code,
+      sqlState: err?.sqlState,
+      errno: err?.errno,
+    });
+    return res.status(500).json({ erro: "Erro interno ao atualizar técnico" });
   }
 });
 
 // ❌ Inativar técnico
-router.delete('/:id', async (req, res) => {
+router.delete("/:id", async (req, res) => {
   const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ erro: "ID inválido" });
+
   try {
-    const [result] = await db.query(`UPDATE tecnico SET status='inativo' WHERE id_tecnico=?`, [id]);
-    if (!result.affectedRows) return res.status(404).json({ erro: 'Técnico não encontrado.' });
-    res.json({ mensagem: 'Técnico marcado como inativo.' });
+    const [result] = await db.query(
+      `UPDATE tecnico SET status='inativo' WHERE id_tecnico=?`,
+      [id],
+    );
+    if (!result.affectedRows)
+      return res.status(404).json({ erro: "Técnico não encontrado." });
+    res.json({ mensagem: "Técnico marcado como inativo." });
   } catch (err) {
-    console.error('❌ Erro ao inativar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao inativar técnico.' });
+    console.error("❌ Erro ao inativar técnico:", err);
+    res.status(500).json({ erro: "Erro ao inativar técnico." });
   }
 });
 
 // ✅ Ativar técnico
-router.put('/ativar/:id', async (req, res) => {
+router.put("/ativar/:id", async (req, res) => {
   const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ erro: "ID inválido" });
+
   try {
-    const [r] = await db.query('UPDATE tecnico SET status="ativo" WHERE id_tecnico=?', [id]);
-    if (!r.affectedRows) return res.status(404).json({ erro: 'Técnico não encontrado.' });
-    res.json({ mensagem: 'Técnico ativado com sucesso.' });
+    const [r] = await db.query(
+      'UPDATE tecnico SET status="ativo" WHERE id_tecnico=?',
+      [id],
+    );
+    if (!r.affectedRows)
+      return res.status(404).json({ erro: "Técnico não encontrado." });
+    res.json({ mensagem: "Técnico ativado com sucesso." });
   } catch (err) {
-    console.error('❌ Erro ao ativar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao ativar técnico.' });
+    console.error("❌ Erro ao ativar técnico:", err);
+    res.status(500).json({ erro: "Erro ao ativar técnico." });
   }
 });
 
 // 🔎 Detalhes do técnico (rota preferida p/ o front)
-router.get('/:id/detalhes', async (req, res) => {
+router.get("/:id/detalhes", async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -190,24 +267,25 @@ router.get('/:id/detalhes', async (req, res) => {
         t.status,
         u.id_usuario,
         u.cpf,
-        NULL AS data_nascimento  -- ajuste aqui quando tiver a coluna na tabela 'usuario'
+        NULL AS data_nascimento
       FROM tecnico t
       LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
       WHERE t.id_tecnico = ?
       `,
-      [id]
+      [id],
     );
 
-    if (!rows.length) return res.status(404).json({ erro: 'Técnico não encontrado.' });
+    if (!rows.length)
+      return res.status(404).json({ erro: "Técnico não encontrado." });
     res.json(rows[0]);
   } catch (err) {
-    console.error('❌ Erro ao buscar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
+    console.error("❌ Erro ao buscar técnico:", err);
+    res.status(500).json({ erro: "Erro ao buscar técnico." });
   }
 });
 
 // 🔎 Compat: /api/tecnicos/:id (fallback)
-router.get('/:id', async (req, res) => {
+router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -221,21 +299,21 @@ router.get('/:id', async (req, res) => {
         t.status,
         u.id_usuario,
         u.cpf,
-        NULL AS data_nascimento  -- ajuste aqui quando tiver a coluna na tabela 'usuario'
+        NULL AS data_nascimento
       FROM tecnico t
       LEFT JOIN usuario u ON u.id_usuario = t.id_usuario
       WHERE t.id_tecnico = ?
       `,
-      [id]
+      [id],
     );
 
-    if (!rows.length) return res.status(404).json({ erro: 'Técnico não encontrado.' });
+    if (!rows.length)
+      return res.status(404).json({ erro: "Técnico não encontrado." });
     res.json(rows[0]);
   } catch (err) {
-    console.error('❌ Erro ao buscar técnico:', err);
-    res.status(500).json({ erro: 'Erro ao buscar técnico.' });
+    console.error("❌ Erro ao buscar técnico:", err);
+    res.status(500).json({ erro: "Erro ao buscar técnico." });
   }
 });
-
 
 module.exports = router;
