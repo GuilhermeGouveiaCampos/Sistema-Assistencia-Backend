@@ -1,14 +1,11 @@
 // routes/ordens.js
 const express = require("express");
-
 const router = express.Router();
 const sharp = require("sharp");
 
 const db = require("../db");
 const { logAudit } = require("../utils/audit");
-
-// ⛔ Removido: Evolution / notifyLocalChange
-// const { notifyLocalChange } = require('../utils/whats');
+// const { notifyLocalChange } = require("../utils/whats"); // (desativado)
 
 // Multer em memória (definido no middleware)
 const { upload } = require("../middleware/upload");
@@ -19,34 +16,40 @@ console.log("🧩 routes/ordens.js carregado");
  * Cadastro de ordem (suporta multipart com campo "imagens")
  * -> As imagens são comprimidas (JPEG) e salvas como BLOB no MySQL
  */
-
 router.post("/", upload.array("imagens", 20), async (req, res) => {
   // 1) Normalização e coerção de tipos
-  const id_cliente       = Number(req.body.id_cliente);
-  const id_tecnico       = Number(req.body.id_tecnico);
-  const id_equipamento   = Number(req.body.id_equipamento);
-  const id_local         = String(req.body.id_local || "").trim();        // ex.: "LOC001"
-  const id_status_os     = Number(req.body.id_status_os);
-  const descricao_problema = (req.body.descricao_problema || "").trim();
-  const descricao_servico  = (req.body.descricao_servico  || "").trim() || null;
-  const data_criacao       = (req.body.data_criacao       || "").trim() || null; // "YYYY-MM-DD"
-  const data_inicio_reparo = (req.body.data_inicio_reparo || "").trim() || null;
-  const data_fim_reparo    = (req.body.data_fim_reparo    || "").trim() || null;
-  const tempo_servico      = req.body.tempo_servico != null ? Number(req.body.tempo_servico) : null;
+  const id_cliente = Number(req.body.id_cliente);
+  const id_tecnico = Number(req.body.id_tecnico);
+  const id_equipamento = Number(req.body.id_equipamento);
+  const id_local = String(req.body.id_local || "").trim(); // ex.: "LOC001"
+  const id_status_os = Number(req.body.id_status_os);
 
-  const files  = req.files || [];
+  const descricao_problema = (req.body.descricao_problema || "").trim();
+  const descricao_servico = (req.body.descricao_servico || "").trim() || null;
+
+  // "YYYY-MM-DD" -> DATETIME vira "YYYY-MM-DD 00:00:00"
+  const data_criacao = (req.body.data_criacao || "").trim() || null;
+  const data_inicio_reparo = (req.body.data_inicio_reparo || "").trim() || null;
+  const data_fim_reparo = (req.body.data_fim_reparo || "").trim() || null;
+
+  const tempo_servico =
+    req.body.tempo_servico != null ? Number(req.body.tempo_servico) : null;
+
+  const files = req.files || [];
   const userId = Number(req.headers["x-user-id"]) || null;
 
   // 2) Validações de presença (falha com 400 — evita 500 genérico)
   const faltando = [];
-  if (!id_cliente)      faltando.push("id_cliente");
-  if (!id_tecnico)      faltando.push("id_tecnico");
-  if (!id_equipamento)  faltando.push("id_equipamento");
-  if (!id_local)        faltando.push("id_local");
-  if (!id_status_os)    faltando.push("id_status_os");
+  if (!id_cliente) faltando.push("id_cliente");
+  if (!id_tecnico) faltando.push("id_tecnico");
+  if (!id_equipamento) faltando.push("id_equipamento");
+  if (!id_local) faltando.push("id_local");
+  if (!id_status_os) faltando.push("id_status_os");
   if (!descricao_problema) faltando.push("descricao_problema");
   if (faltando.length) {
-    return res.status(400).json({ erro: `Campos obrigatórios ausentes: ${faltando.join(", ")}` });
+    return res
+      .status(400)
+      .json({ erro: `Campos obrigatórios ausentes: ${faltando.join(", ")}` });
   }
 
   // 3) Execução
@@ -56,21 +59,38 @@ router.post("/", upload.array("imagens", 20), async (req, res) => {
     await conn.beginTransaction();
 
     // 3.1) Checagem de FKs (garante que IDs existem)
-    const [[okCli]] = await conn.query("SELECT 1 ok FROM cliente     WHERE id_cliente     = ? AND status = 'ativo' LIMIT 1", [id_cliente]);
-    const [[okTec]] = await conn.query("SELECT 1 ok FROM tecnico     WHERE id_tecnico     = ? AND status = 'ativo' LIMIT 1", [id_tecnico]);
-    const [[okEqp]] = await conn.query("SELECT 1 ok FROM equipamento WHERE id_equipamento = ? LIMIT 1", [id_equipamento]);
-    const [[okLoc]] = await conn.query("SELECT 1 ok FROM local       WHERE TRIM(id_scanner) = TRIM(?) AND TRIM(status) = 'ativo' LIMIT 1", [id_local]);
-    const [[okSta]] = await conn.query("SELECT 1 ok FROM status_os   WHERE id_status      = ? LIMIT 1", [id_status_os]);
+    const [[okCli]] = await conn.query(
+      "SELECT 1 ok FROM cliente WHERE id_cliente = ? AND status='ativo' LIMIT 1",
+      [id_cliente],
+    );
+    const [[okTec]] = await conn.query(
+      "SELECT 1 ok FROM tecnico WHERE id_tecnico = ? AND status='ativo' LIMIT 1",
+      [id_tecnico],
+    );
+    const [[okEqp]] = await conn.query(
+      "SELECT 1 ok FROM equipamento WHERE id_equipamento = ? LIMIT 1",
+      [id_equipamento],
+    );
+    const [[okLoc]] = await conn.query(
+      "SELECT 1 ok FROM local WHERE TRIM(id_scanner)=TRIM(?) AND TRIM(status)='ativo' LIMIT 1",
+      [id_local],
+    );
+    const [[okSta]] = await conn.query(
+      "SELECT 1 ok FROM status_os WHERE id_status = ? LIMIT 1",
+      [id_status_os],
+    );
 
     const faltantes = [];
     if (!okCli?.ok) faltantes.push("id_cliente (não encontrado/ativo)");
     if (!okTec?.ok) faltantes.push("id_tecnico (não encontrado/ativo)");
     if (!okEqp?.ok) faltantes.push("id_equipamento (não encontrado)");
-    if (!okLoc?.ok) faltantes.push("id_local (scanner inválido ou inativo)");
+    if (!okLoc?.ok) faltantes.push("id_local (scanner inválido/inativo)");
     if (!okSta?.ok) faltantes.push("id_status_os (não encontrado)");
     if (faltantes.length) {
       await conn.rollback();
-      return res.status(400).json({ erro: `Referências inválidas: ${faltantes.join(", ")}` });
+      return res
+        .status(400)
+        .json({ erro: `Referências inválidas: ${faltantes.join(", ")}` });
     }
 
     // 3.2) Insert principal
@@ -99,9 +119,31 @@ router.post("/", upload.array("imagens", 20), async (req, res) => {
     const id_os = result.insertId;
 
     // 3.3) Audit
-    await logAudit(conn, { entityType: "ordem", entityId: id_os, action: "criou",  note: "Cadastro de OS", userId });
-    await logAudit(conn, { entityType: "ordem", entityId: id_os, action: "local",  field: "id_local",     oldValue: null, newValue: id_local,         userId });
-    await logAudit(conn, { entityType: "ordem", entityId: id_os, action: "status", field: "id_status_os", oldValue: null, newValue: String(id_status_os), userId });
+    await logAudit(conn, {
+      entityType: "ordem",
+      entityId: id_os,
+      action: "criou",
+      note: "Cadastro de OS",
+      userId,
+    });
+    await logAudit(conn, {
+      entityType: "ordem",
+      entityId: id_os,
+      action: "local",
+      field: "id_local",
+      oldValue: null,
+      newValue: id_local,
+      userId,
+    });
+    await logAudit(conn, {
+      entityType: "ordem",
+      entityId: id_os,
+      action: "status",
+      field: "id_status_os",
+      oldValue: null,
+      newValue: String(id_status_os),
+      userId,
+    });
 
     // 3.4) Imagens (se vierem no multipart)
     if (files.length > 0) {
@@ -110,21 +152,28 @@ router.post("/", upload.array("imagens", 20), async (req, res) => {
         let outBuf = f.buffer;
         let outMime = f.mimetype;
         try {
-          const img  = sharp(f.buffer).rotate();
+          const img = sharp(f.buffer).rotate();
           const meta = await img.metadata();
           if ((meta.width || 0) > 1600) img.resize({ width: 1600 });
-          outBuf  = await img.jpeg({ quality: 80 }).toBuffer();
+          outBuf = await img.jpeg({ quality: 80 }).toBuffer();
           outMime = "image/jpeg";
         } catch {
-          outBuf  = f.buffer;
+          outBuf = f.buffer;
           outMime = f.mimetype || "application/octet-stream";
         }
-        rowsToInsert.push([id_os, null, f.originalname || null, outMime, outBuf.length, outBuf]);
+        rowsToInsert.push([
+          id_os,
+          null,
+          f.originalname || null,
+          outMime,
+          outBuf.length,
+          outBuf,
+        ]);
       }
 
       await conn.query(
         `INSERT INTO os_imagem (id_os, url, original_name, mime, size, data) VALUES ?`,
-        [rowsToInsert]
+        [rowsToInsert],
       );
 
       await logAudit(conn, {
@@ -137,28 +186,32 @@ router.post("/", upload.array("imagens", 20), async (req, res) => {
     }
 
     await conn.commit();
-    return res.status(201).json({ mensagem: "Ordem cadastrada com sucesso!", id_os });
+    return res
+      .status(201)
+      .json({ mensagem: "Ordem cadastrada com sucesso!", id_os });
   } catch (err) {
     if (conn) await conn.rollback();
-    // log com mais detalhes para debugar rápido
     console.error("❌ Erro ao cadastrar ordem de serviço:", {
       message: err?.message,
       code: err?.code,
       sqlState: err?.sqlState,
       errno: err?.errno,
     });
-    return res.status(500).json({ erro: "Erro ao cadastrar ordem de serviço." });
+    return res
+      .status(500)
+      .json({ erro: "Erro ao cadastrar ordem de serviço." });
   } finally {
     if (conn) conn.release();
   }
 });
+
 /**
  * Listas auxiliares (clientes/tecnicos/locais)
  */
 router.get("/clientes", async (_req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT id_cliente, nome, cpf FROM cliente WHERE status = "ativo"',
+      'SELECT id_cliente, nome, cpf FROM cliente WHERE status="ativo"',
     );
     res.json(rows);
   } catch (err) {
@@ -170,7 +223,7 @@ router.get("/clientes", async (_req, res) => {
 router.get("/tecnicos", async (_req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT id_tecnico, nome, cpf FROM tecnico WHERE status = "ativo"',
+      'SELECT id_tecnico, nome, cpf FROM tecnico WHERE status="ativo"',
     );
     res.json(rows);
   } catch (err) {
@@ -182,7 +235,6 @@ router.get("/tecnicos", async (_req, res) => {
 /* ✅ Locais: lista APENAS ativos + mapeia id_status com fallback */
 router.get("/locais", async (_req, res) => {
   try {
-    // Só locais ativos
     const [locais] = await db.query(`
       SELECT 
         TRIM(id_scanner)      AS id_scanner,
@@ -190,7 +242,7 @@ router.get("/locais", async (_req, res) => {
         TRIM(status_interno)  AS status_interno,
         TRIM(status)          AS status
       FROM local
-      WHERE TRIM(status) = 'ativo'
+      WHERE TRIM(status)='ativo'
       ORDER BY id_scanner
     `);
 
@@ -202,11 +254,9 @@ router.get("/locais", async (_req, res) => {
       );
       for (const s of sts)
         statusMap.set(String(s.descricao || ""), Number(s.id_status));
-    } catch {
-      /* opcional */
-    }
+    } catch {}
 
-    // 🧭 fallback por ID do local (mesmo usado no PUT)
+    // Fallback por ID do local
     const MAP_LOCAL_TO_STATUS = {
       LOC_DIAG: 2, // Diagnóstico
       LOC001: 1, // Recebido
@@ -228,7 +278,6 @@ router.get("/locais", async (_req, res) => {
       vistos.add(key);
 
       const desc = String(l.status_interno || "").trim();
-      // 1º tenta pela descrição (status_os); 2º usa fallback pelo id_scanner
       const id_status = statusMap.has(desc)
         ? statusMap.get(desc)
         : MAP_LOCAL_TO_STATUS[key] || 0;
@@ -238,7 +287,7 @@ router.get("/locais", async (_req, res) => {
         id_scanner: key,
         local_instalado: String(l.local_instalado || "").trim(),
         status_interno: desc,
-        id_status: Number(id_status || 0), // 👈 agora LOC008 volta com ID também
+        id_status: Number(id_status || 0),
         status: "ativo",
       });
     }
@@ -386,8 +435,7 @@ router.delete("/:id/imagens/:id_img", async (req, res) => {
 });
 
 /**
- * Atualizar ordem + controlar timer (diagnóstico/orçamento)
- * (sem Evolution; quem envia WhatsApp é o utils/whats-bot.js observando o banco)
+ * Atualizar ordem (tolerante a campos faltando) + auditoria
  */
 router.put("/:id", async (req, res) => {
   const id_ordem = String(req.params.id || "").trim();
@@ -396,8 +444,8 @@ router.put("/:id", async (req, res) => {
   // Aceita ambos os nomes vindos do front
   const body = req.body || {};
   const descricao_problema = (body.descricao_problema ?? "").toString().trim();
-  const descricao_servico  = (body.descricao_servico  ?? "").toString().trim() || null;
-  const idLocalStrRaw      = (body.id_local ?? "").toString().trim();
+  const descricao_servico = (body.descricao_servico ?? "").toString().trim() || null;
+  const idLocalStrRaw = (body.id_local ?? "").toString().trim();
   // o front às vezes manda id_status_os; outras, id_status
   let idStatusNum = Number(body.id_status_os ?? body.id_status);
 
@@ -436,7 +484,6 @@ router.put("/:id", async (req, res) => {
 
     // 3) Resolver status: prioridade (a) enviado, (b) mapeado pelo local, (c) manter anterior
     if (!idStatusNum || Number.isNaN(idStatusNum)) {
-      // tenta mapear pela descrição do local
       const [[stByDesc]] = await conn.query(
         `SELECT id_status FROM status_os WHERE descricao = ? LIMIT 1`,
         [locRow.status_interno],
@@ -444,13 +491,14 @@ router.put("/:id", async (req, res) => {
       if (stByDesc?.id_status) idStatusNum = Number(stByDesc.id_status);
     }
     if (!idStatusNum || Number.isNaN(idStatusNum)) {
-      // fallback: manter o anterior
       idStatusNum = Number(prev.id_status_os);
     }
 
     // 4) Se vier string vazia de descrição, mantém a antiga (evita 400)
     const descProblemaToSave =
-      descricao_problema.length ? descricao_problema : String(prev.descricao_problema || "");
+      descricao_problema.length
+        ? descricao_problema
+        : String(prev.descricao_problema || "");
 
     // 5) Atualizar
     const [upd] = await conn.query(
@@ -469,7 +517,7 @@ router.put("/:id", async (req, res) => {
     }
 
     // 6) Auditoria (somente quando mudou)
-    const localChanged  = String(prev.id_local)    !== String(idLocalStr);
+    const localChanged = String(prev.id_local) !== String(idLocalStr);
     const statusChanged = Number(prev.id_status_os) !== Number(idStatusNum);
 
     if (localChanged) {
@@ -508,6 +556,7 @@ router.put("/:id", async (req, res) => {
     if (conn) conn.release();
   }
 });
+
 /**
  * Ativar (voltar para 'ativo')
  */
@@ -522,8 +571,8 @@ router.put("/ativar/:id", async (req, res) => {
   try {
     const [upd] = await db.query(
       `UPDATE ordenservico
-          SET status = 'ativo'
-        WHERE id_os = ? AND status = 'inativo'`,
+          SET status='ativo'
+        WHERE id_os=? AND status='inativo'`,
       [id],
     );
 
@@ -563,7 +612,7 @@ router.delete("/:id", async (req, res) => {
 
   try {
     const [upd] = await db.query(
-      `UPDATE ordenservico SET status = 'inativo' WHERE id_os = ?`,
+      `UPDATE ordenservico SET status='inativo' WHERE id_os=?`,
       [id],
     );
     if (upd.affectedRows === 0) {
