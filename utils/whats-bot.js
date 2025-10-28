@@ -94,15 +94,40 @@ try {
 
 /* ========= Mensagens por LOCAL ========= */
 const MESSAGES_BY_LOCAL = new Map([
-  ["LOC001", "✅ Bem-vindo à *Eletrotek*! Demos entrada em seu equipamento. Em breve você receberá seu orçamento."],
-  ["LOC002", "🔧 Seu equipamento já está na mesa do técnico para diagnóstico."],
-  ["LOC003", "📩 Seu orçamento foi enviado. Assim que você autorizar, daremos sequência ao reparo."],
-  ["LOC004", "📦 Estamos aguardando a chegada das peças."],
-  ["LOC005", "🛠️ Seu equipamento está em *reparo* neste momento."],
-  ["LOC006", "🧪 Estamos *testando* seu equipamento para garantir que ficou 100%."],
-  ["LOC007", "📦 Seu equipamento está *pronto para retirada*."],
-  ["LOC008", "✅ Sua OS foi *finalizada e entregue*. Obrigado por escolher a Eletrotek!"],
+  [
+    "LOC001",
+    "👋 *Olá!* Aqui é a *Eletrotek*!\n\nRecebemos o seu equipamento e ele já está em nossa central técnica. 🔍 Assim que o orçamento estiver pronto, entraremos em contato com você!"
+  ],
+  [
+    "LOC002",
+    "🧰 *Atualização Eletrotek:*\nSeu equipamento já está na *bancada do técnico* e o diagnóstico está em andamento. Em breve teremos novidades para você!"
+  ],
+  [
+    "LOC003",
+    "💬 *Orçamento disponível!*\nO diagnóstico foi concluído e o orçamento está pronto. 💰 Entre em contato conosco quando puder para avaliarmos juntos as opções de reparo."
+  ],
+  [
+    "LOC004",
+    "🚚 *Status Eletrotek: Aguardando Peças*\nSeu equipamento já foi avaliado e as peças necessárias estão a caminho. Assim que chegarem, daremos sequência ao reparo. 🔧"
+  ],
+  [
+    "LOC005",
+    "⚙️ *Seu equipamento está em reparo!*\nNosso técnico está realizando o serviço com todo o cuidado. 🛠️ Logo mais traremos boas notícias!"
+  ],
+  [
+    "LOC006",
+    "🧪 *Etapa de testes concluída!*\nEstamos testando o equipamento para garantir que tudo funcione perfeitamente antes da entrega. ✅"
+  ],
+  [
+    "LOC007",
+    "📦 *Equipamento pronto!*\nSeu equipamento já está *finalizado e pronto para retirada* na *Eletrotek*. Venha buscá-lo quando quiser! 😊"
+  ],
+  [
+    "LOC008",
+    "🎉 *Concluímos o serviço!*\nSua *Ordem de Serviço foi finalizada e o equipamento entregue.*\n\nAgradecemos por confiar na *Eletrotek*! 💙 Esperamos vê-lo em breve!"
+  ],
 ]);
+
 
 /* ========= Mensagens extras por STATUS ========= */
 const MESSAGES_BY_STATUS = new Map([
