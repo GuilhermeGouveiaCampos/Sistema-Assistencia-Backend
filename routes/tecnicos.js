@@ -29,7 +29,10 @@ router.get("/", async (req, res) => {
     }
     if (cpf) {
       const onlyDigits = String(cpf).replace(/\D/g, "");
-      sql += ` AND (REPLACE(u.cpf, '.', '') LIKE ? OR REPLACE(REPLACE(REPLACE(t.telefone, '(', ''), ')', ''), '-', '') LIKE ?)`;
+      sql += ` AND (
+        REPLACE(REPLACE(REPLACE(u.cpf, '.', ''), '-', ''), ' ', '') LIKE ?
+        OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(t.telefone, '(', ''), ')', ''), '-', ''), ' ', ''), '.', '') LIKE ?
+      )`;
       params.push(`%${onlyDigits}%`, `%${onlyDigits}%`);
     }
 
@@ -115,7 +118,6 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    // garante que o usuário existe
     const [[u]] = await db.query(
       "SELECT id_usuario FROM usuario WHERE id_usuario = ? LIMIT 1",
       [id_usuario]
@@ -137,7 +139,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 📝 Atualizar técnico (ACEITA UPDATE PARCIAL) + opcional atualizar CPF do usuário vinculado
+// 📝 Atualizar técnico (update parcial) + opcional atualizar CPF do usuário vinculado
 router.put("/:id", async (req, res) => {
   const id = String(req.params.id || "").trim();
   if (!/^\d+$/.test(id)) return res.status(400).json({ erro: "ID inválido" });
@@ -148,42 +150,29 @@ router.put("/:id", async (req, res) => {
   const telefone       = (body.telefone ?? "").toString().trim();
   const cpf            = (body.cpf ?? "").toString().trim(); // opcional (na tabela usuario)
 
-  // nada para atualizar?
   if (![nome, especializacao, telefone, cpf].some(v => v.length)) {
     return res.status(400).json({ erro: "Nenhum campo para atualizar" });
   }
 
   try {
-    // existe?
     const [[tec]] = await db.query(
       "SELECT id_tecnico, id_usuario FROM tecnico WHERE id_tecnico = ? LIMIT 1",
       [id]
     );
     if (!tec) return res.status(404).json({ erro: "Técnico não encontrado" });
 
-    // validações leves
     if (telefone && telefone.replace(/\D/g, "").length < 10) {
       return res.status(400).json({ erro: "Telefone inválido" });
     }
     if (cpf && !/^\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/.test(cpf)) {
       return res.status(400).json({ erro: "CPF inválido" });
     }
-    // se quiser impedir CPF duplicado em outro usuário, descomente:
-    // if (cpf) {
-    //   const [[dup]] = await db.query(
-    //     "SELECT id_usuario FROM usuario WHERE cpf = ? AND id_usuario <> ? LIMIT 1",
-    //     [cpf, tec.id_usuario || 0]
-    //   );
-    //   if (dup) return res.status(400).json({ erro: "CPF já cadastrado para outro usuário" });
-    // }
 
-    // monta SET dinâmico
     const sets = [];
     const vals = [];
     if (nome)           { sets.push("nome = ?"); vals.push(nome); }
     if (especializacao) { sets.push("especializacao = ?"); vals.push(especializacao); }
     if (telefone)       { sets.push("telefone = ?"); vals.push(telefone); }
-    sets.push("data_atualizacao = NOW()");
 
     if (sets.length > 0) {
       const sql = `UPDATE tecnico SET ${sets.join(", ")} WHERE id_tecnico = ?`;
@@ -194,7 +183,6 @@ router.put("/:id", async (req, res) => {
       }
     }
 
-    // atualizar CPF do usuário vinculado (opcional)
     if (cpf && tec.id_usuario) {
       await db.query("UPDATE usuario SET cpf = ? WHERE id_usuario = ?", [
         cpf,
