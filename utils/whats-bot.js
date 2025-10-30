@@ -108,7 +108,7 @@ const MESSAGES_BY_LOCAL = new Map([
   ],
   [
     "LOC004",
-    "🚚 *Status Eletrotek: Aguardando Peças*\nSeu equipamento já foi avaliado e as peças necessárias estão a caminho. Assim que chegarem, daremos sequência ao reparo. 🔧"
+    "🚚 *Status Eletrotek: Aguardando Peças*\nSeu equipamento já foi avaliado e as peças necessárias estão a caminho. Assim que chegarem as peças, daremos sequência ao reparo. 🔧"
   ],
   [
     "LOC005",
