@@ -89,11 +89,25 @@ router.get("/atribuicoes", async (_req, res) => {
         o.data_inicio_reparo,
         o.data_fim_reparo,
         COALESCE(o.tempo_servico, 0) AS tempo_servico,
-        (COALESCE(o.tempo_servico,0) +
-         IF(o.data_inicio_reparo IS NULL, 0,
-            TIMESTAMPDIFF(MINUTE, o.data_inicio_reparo, NOW())
-         )
-        ) AS minutos_total
+
+        /* ****** TRECHO ALTERADO: cálculo de minutos_total ****** */
+        CASE
+          -- Em Diagnóstico: conta desde a criação da OS até agora
+          WHEN s.descricao IN ('Em Diagnóstico', 'Em Diagnostico') THEN
+            COALESCE(o.tempo_servico, 0)
+            + TIMESTAMPDIFF(MINUTE, o.data_criacao, NOW())
+
+          -- Demais status: mantém lógica antiga (conta a partir de data_inicio_reparo)
+          ELSE
+            COALESCE(o.tempo_servico, 0)
+            + IF(
+                o.data_inicio_reparo IS NULL,
+                0,
+                TIMESTAMPDIFF(MINUTE, o.data_inicio_reparo, NOW())
+              )
+        END AS minutos_total
+        /* ****** FIM TRECHO ALTERADO ****** */
+
       FROM ordenservico o
       JOIN tecnico     t ON o.id_tecnico     = t.id_tecnico
       JOIN cliente     c ON o.id_cliente     = c.id_cliente
