@@ -455,9 +455,15 @@ router.put("/:id", async (req, res) => {
   try {
     conn = await db.getConnection();
 
-    // 1) Registro anterior
+    // 1) Registro anterior  (🆕 agora traz também datas e tempo)
     const [prevRows] = await conn.query(
-      `SELECT id_local, id_status_os, descricao_problema
+      `SELECT id_local,
+              id_status_os,
+              descricao_problema,
+              data_inicio_reparo,
+              data_fim_reparo,
+              tempo_servico,
+              data_criacao
          FROM ordenservico
         WHERE id_os = ?`,
       [id_ordem],
@@ -500,16 +506,67 @@ router.put("/:id", async (req, res) => {
         ? descricao_problema
         : String(prev.descricao_problema || "");
 
-    // 5) Atualizar
+    /* ========= 🔥 NOVO: lógica de datas/tempo por status ========= */
+
+    // Descobrimos a descrição do novo status
+    const [[newStatusRow]] = await conn.query(
+      `SELECT descricao FROM status_os WHERE id_status = ? LIMIT 1`,
+      [idStatusNum],
+    );
+    const newStatusDesc = (newStatusRow?.descricao || "").trim();
+
+    const agora = new Date();
+
+    // Começamos com os valores atuais
+    let dataInicioReparo = prev.data_inicio_reparo || null;
+    let dataFimReparo = prev.data_fim_reparo || null;
+    let tempoServico =
+      prev.tempo_servico != null ? Number(prev.tempo_servico) : null;
+
+    // Se status virou "Em Diagnóstico" e ainda não tinha início, marca agora
+    if (["Em Diagnóstico", "Em Diagnostico"].includes(newStatusDesc)) {
+      if (!dataInicioReparo) {
+        dataInicioReparo = agora;
+      }
+    }
+
+    // Se status virou "Finalizado" ou "Cancelado", fecha o reparo e calcula tempo
+    if (["Finalizado", "Cancelado"].includes(newStatusDesc)) {
+      dataFimReparo = agora;
+
+      const baseStr = dataInicioReparo || prev.data_criacao;
+      if (baseStr) {
+        const baseDate = new Date(baseStr);
+        const diffMs = agora.getTime() - baseDate.getTime();
+        const diffMin = Math.max(0, Math.round(diffMs / 60000));
+        tempoServico = diffMin;
+      }
+    }
+
+    /* ======== FIM NOVO bloco de datas/tempo ======== */
+
+    // 5) Atualizar (🆕 adicionamos data_inicio_reparo, data_fim_reparo, tempo_servico)
     const [upd] = await conn.query(
       `UPDATE ordenservico
           SET descricao_problema = ?,
               descricao_servico  = COALESCE(?, descricao_servico),
               id_local           = ?,
               id_status_os       = ?,
-              data_atualizacao   = NOW()
+              data_atualizacao   = NOW(),
+              data_inicio_reparo = ?,
+              data_fim_reparo    = ?,
+              tempo_servico      = ?
         WHERE id_os = ?`,
-      [descProblemaToSave, descricao_servico, idLocalStr, idStatusNum, id_ordem],
+      [
+        descProblemaToSave,
+        descricao_servico,
+        idLocalStr,
+        idStatusNum,
+        dataInicioReparo,
+        dataFimReparo,
+        tempoServico,
+        id_ordem,
+      ],
     );
 
     if (upd.affectedRows === 0) {

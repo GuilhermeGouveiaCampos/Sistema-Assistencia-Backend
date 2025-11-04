@@ -90,23 +90,21 @@ router.get("/atribuicoes", async (_req, res) => {
         o.data_fim_reparo,
         COALESCE(o.tempo_servico, 0) AS tempo_servico,
 
-        /* ****** TRECHO ALTERADO: cálculo de minutos_total ****** */
+        /* ====== CÁLCULO NOVO: usa SOMENTE data_inicio_reparo ====== */
         CASE
-          -- Em Diagnóstico: conta desde a criação da OS até agora
+          -- Enquanto estiver EM DIAGNÓSTICO, conta em tempo real
           WHEN s.descricao IN ('Em Diagnóstico', 'Em Diagnostico') THEN
-            COALESCE(o.tempo_servico, 0)
-            + TIMESTAMPDIFF(MINUTE, o.data_criacao, NOW())
+            IF(
+              o.data_inicio_reparo IS NULL,
+              0,  -- ainda não iniciamos o reparo
+              TIMESTAMPDIFF(MINUTE, o.data_inicio_reparo, NOW())
+            )
 
-          -- Demais status: mantém lógica antiga (conta a partir de data_inicio_reparo)
+          -- Para demais status, mostramos só o tempo_servico armazenado
           ELSE
             COALESCE(o.tempo_servico, 0)
-            + IF(
-                o.data_inicio_reparo IS NULL,
-                0,
-                TIMESTAMPDIFF(MINUTE, o.data_inicio_reparo, NOW())
-              )
         END AS minutos_total
-        /* ****** FIM TRECHO ALTERADO ****** */
+        /* ====== FIM CÁLCULO NOVO ====== */
 
       FROM ordenservico o
       JOIN tecnico     t ON o.id_tecnico     = t.id_tecnico
@@ -122,7 +120,6 @@ router.get("/atribuicoes", async (_req, res) => {
     res.status(500).json({ erro: "Erro ao buscar atribuições dos técnicos." });
   }
 });
-
 // ➕ Cadastrar técnico
 router.post("/", async (req, res) => {
   const { nome, especializacao, telefone, id_usuario } = req.body;
