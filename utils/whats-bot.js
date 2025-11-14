@@ -477,3 +477,41 @@ function loop() {
     Number(POLL_INTERVAL_MS),
   );
 }
+// ========= ENVIO DIRETO PARA RECUPERAÇÃO DE SENHA ========= //
+
+/**
+ * Envia uma mensagem simples para um único número (sem amarrar em OS).
+ * Usado, por exemplo, para envio de código de recuperação de senha.
+ *
+ * @param {string} phoneRaw - Telefone em qualquer formato (com ou sem DDD/55)
+ * @param {string} text - Mensagem de texto a ser enviada
+ */
+async function sendDirectMessage(phoneRaw, text) {
+  const num = normalizeBR(phoneRaw);
+  if (!num) {
+    throw new Error(`Telefone inválido: ${phoneRaw}`);
+  }
+
+  try {
+    const numberId = await client.getNumberId(num);
+    if (!numberId) {
+      throw new Error(`Número ${num} não está no WhatsApp`);
+    }
+
+    const jid = numberId._serialized;
+    await client.sendMessage(jid, text);
+
+    console.log(`[whats] (direct) enviado para ${num} | jid=${jid}`);
+  } catch (e) {
+    console.error(
+      `[whats] Falha ao enviar mensagem direta para ${phoneRaw}:`,
+      e?.message || e,
+    );
+    throw e;
+  }
+}
+
+// Exporta a função para outros arquivos poderem usar
+module.exports = {
+  sendDirectMessage,
+};
